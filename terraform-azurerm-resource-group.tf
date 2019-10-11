@@ -140,14 +140,6 @@ resource "azurerm_virtual_machine" "myterraformvm" {
         admin_username = "azureuser"
     }
 
-    os_profile_linux_config {
-        disable_password_authentication = true
-        ssh_keys {
-            path     = "/home/azureuser/.ssh/authorized_keys"
-            key_data = "ssh-rsa AAAAB3Nz{snip}hwhqT9h"
-        }
-    }
-
     boot_diagnostics {
         enabled = "true"
         storage_uri = "${azurerm_storage_account.mystorageaccount.primary_blob_endpoint}"
