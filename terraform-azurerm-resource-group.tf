@@ -1,9 +1,9 @@
 # Configure the Microsoft Azure Provider
 provider "azurerm" {
-    subscription_id = "14b2f360-a1d4-40bc-8ebc-8f0b6e258a59"
-    client_id       = "e2405b07-bd5b-427b-9ca6-793ea90ef015"
-    client_secret   = "03f2983e-9c8b-4720-b2c3-a2982a87d989"
-    tenant_id       = "c6e2d970-ebed-4e54-8eca-413aed7bde23"
+    subscription_id = var.subscription_id
+    client_id       = var.client_id
+    client_secret   = var.client_secret
+    tenant_id       = var.tenant_id
 }
 
 # Create a resource group if it doesn’t exist
@@ -138,7 +138,7 @@ resource "azurerm_virtual_machine" "myterraformvm" {
     os_profile {
         computer_name  = "hostname"
         admin_username = "testadmin"
-        admin_password = "Password1234!"
+        admin_password = "Password12345!"
     }
     
     os_profile_linux_config {
