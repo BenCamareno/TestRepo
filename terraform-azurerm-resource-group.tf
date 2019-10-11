@@ -136,8 +136,13 @@ resource "azurerm_virtual_machine" "myterraformvm" {
     }
 
     os_profile {
-        computer_name  = "myvm"
-        admin_username = "azureuser"
+        computer_name  = "hostname"
+        admin_username = "testadmin"
+        admin_password = "Password1234!"
+    }
+    
+    os_profile_linux_config {
+        disable_password_authentication = false
     }
 
     boot_diagnostics {
