@@ -1,0 +1,102 @@
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+ This template creates the ec2-only using AWS Service Catalog products
+
+# This section allows the development team to pass values into the template to customize the AWS Service Catalog Products
+Parameters:
+ # product parameters
+  ProductId:
+   Description: Product Id for the ec2-only Product
+   Type: String
+   Default: "prod-xxxxxxxx"
+  ProvisionedProductName: name for the ec2-only Product
+    Type: String
+    Default: "xxxxxxxx"  
+  ProvisioningArtifactId:
+   Description: Artifact Id (version) for the ALB product
+   Type: String
+   Default: "pa-xxxxxxxxx" 
+
+ # Blueprint Parameters  
+  SecurityZone:    
+    Type: String
+    Description: Security Zone for the bluebrint
+    AllowedValues: [ ic, mgmt,res,sec ]  
+  DataClassification:    
+    Type: String
+    Description: Data Classification for the bluebrint
+    AllowedValues: [GroupUse,Public,Confidential,CustomerPersonal,HighlyProtected]         
+        
+ # Common Parameters  
+  NodeName:    
+    Type: String
+    Description: unique application name.
+  AppPort:    
+    Description: application tcp port. there is no support for UDP applications at the moment.
+    Default: 443
+    Type: Number
+  SNSTopic:
+    Default: none
+    Type: String
+    Description: topic arn to receive notifications about autoscaling activities. if not provided, a new sns topic will be created
+  AppSoe:    
+    Type: String
+    Description: sampleapp SOE AMI to use. if not provided, latest windows or linux ami will be used
+  LatestLinuxAmiId:
+    Description: Latest CBA Approved Linux AMI Id
+    Type: String
+  LatestWindowsAmiId:
+    Description: Latest CBA Approved Windows AMI Id
+    Type: String
+  OsType:    
+    Description: Operating system, Windows or Linux
+    Type: String
+  SecurityGroups:    
+    Description: existing security groups to associate with instance (optional)
+    Type: String
+    
+# EC2 Parameters  
+  InstanceType:
+    Description: c5.4xlarge,c4.xlarge, c4.2xlarge, c4.4xlarge, c4.8xlarge. any validate ec2 instance size is allowed.
+    Type: String
+  InstanceProfileArn:
+    Description: The instance profile arn for EC2. Standard L2 BP Instance Profile for the tenants (if pre-created !!!). if not provided, a new profile will be created with minimum permessions to read from artifactory bucket and read a sample secret stored in secrets manager.
+    Type: String
+  EBSSize:
+    Description: Size of root EBS volume
+    Type: Number 
+
+Resources:
+  ec2Blueprint:
+    Type: AWS::ServiceCatalog::CloudFormationProvisionedProduct
+    Properties: 
+      ProductId: !Ref ProductId
+      ProvisionedProductName: !Ref ProvisionedProductName
+      ProvisioningArtifactId: !Ref ProvisioningArtifactId
+      ProvisioningParameters:
+        - Key: 'InstanceType' 
+          Value: !Ref InstanceType
+        - Key: 'InstanceProfileArn'
+          Value: !Ref InstanceProfileArn        
+        - Key: 'EBSSize'
+          Value: !Ref EBSSize
+        - Key:  SecurityZone
+          Value: !Ref SecurityZone
+        - Key: 'DataClassification'
+          Value: !Ref DataClassification 
+        - Key: 'NodeName' 
+          Value: !Ref NodeName
+        - Key: 'AppPort'
+          Value: !Ref AppPort
+        - Key: 'SNSTopic'
+          Value: !Ref SNSTopic
+        - Key: 'AppSoe'
+          Value: !Ref AppSoe
+        - Key: 'LatestLinuxAmiId'
+          Value: !Ref LatestLinuxAmiId
+        - Key: 'OsType'
+          Value: !Ref OsType
+        - Key: 'SecurityGroups'
+          Value: !Ref SecurityGroups
+   
