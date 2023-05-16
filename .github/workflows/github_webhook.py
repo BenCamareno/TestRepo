@@ -1,204 +1,148 @@
-
-# flake8: noqa
-
-import json
-import logging
-import requests
-import os
-import re
-from urllib.parse import urlsplit, urlunsplit, urljoin
 import boto3
-from botocore.config import Config
-from botocore.exceptions import ClientError
-from github import Github
+import time
+import json
+import os
+import logging
 
-# Set logger
 logger = logging.getLogger()
-if "DEBUG" in os.environ:
-    logger.setLevel(logging.DEBUG)
-else:
-    logger.setLevel(logging.INFO)
-
-SUCCESS = "SUCCESS"
-FAILED = "FAILED"
+# Set logging level to INFO for troubleshoot
+logger.setLevel(logging.INFO)
+# logger.setLevel(logging.WARNING)
 
 
-def cfnresponse_send(
-    event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False
-):
-    responseUrl = event["ResponseURL"]
-
-    print(responseUrl)
-
-    responseBody = {}
-    responseBody["Status"] = responseStatus
-    responseBody["Reason"] = (
-        "See the details in CloudWatch Log Stream: " + context.log_stream_name
+def get_session(role_arn):
+    logger.info('Assuming the role: ' + str(role_arn))
+    sts = boto3.client('sts')
+    resp = sts.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName='PatchManagerSession'
     )
-    responseBody["PhysicalResourceId"] = physicalResourceId or context.log_stream_name
-    responseBody["StackId"] = event["StackId"]
-    responseBody["RequestId"] = event["RequestId"]
-    responseBody["LogicalResourceId"] = event["LogicalResourceId"]
-    responseBody["NoEcho"] = noEcho
-    responseBody["Data"] = responseData
-
-    json_responseBody = json.dumps(responseBody)
-
-    print("Response body:\n" + json_responseBody)
-
-    headers = {"content-type": "", "content-length": str(len(json_responseBody))}
-
-    try:
-        response = requests.put(responseUrl, data=json_responseBody, headers=headers)
-        print("Status code: " + response.reason)
-    except Exception as e:
-        print("send(..) failed executing requests.put(..): " + str(e))
-
-
-def get_cb_client():
-    """Creates and return a codebuild client using boto3"""
-    return boto3.client("codebuild")
-
-
-def get_ghe_token():
-    """Returns GitHub token configured for CI/CD."""
-    client = boto3.client("secretsmanager")
-    secret_name = os.environ["GITHUB_TOKEN_SECRET_NAME"]
-    return client.get_secret_value(SecretId=secret_name)["SecretString"]
-
-
-def get_ghe_client(gheUrl):
-    """Creates and returns a GHE client using pyGitHub"""
-    repo_url_split = urlsplit(gheUrl)
-    ghe_base_url = "{0.scheme}://{0.netloc}/".format(repo_url_split)
-    repo_name = re.sub("\.git$", "", repo_url_split.path)[1:]
-
-    token = get_ghe_token()
-
-    g = Github(
-        base_url=urljoin(ghe_base_url, "api/v3"), verify=False, login_or_token=token
+    credentials = resp['Credentials']
+    session = boto3.session.Session(
+        aws_access_key_id=credentials['AccessKeyId'],
+        aws_secret_access_key=credentials['SecretAccessKey'],
+        aws_session_token=credentials['SessionToken']
     )
-    repo = g.get_repo(repo_name)
-    return repo
+    return session
 
+def find_target_tag():
+    # Change the maintenance window target based on the time of the day
+    os.environ['TZ'] = 'Australia/Sydney'
+    time.tzset()
+    day = time.strftime('%A', time.localtime())
+    hour = time.strftime('%H', time.localtime())
+    tag_value = '{}-{}:00AEST'.format(day,hour)
+    return tag_value
+    print("find_target_tag function retuned {}".format(tag_value))
 
-def get_payload_url(payloadUrl):
-    """substitute codebuild endpoint url with a custom one"""
-    if "CodeBuildDNSRecord" in os.environ:
-        normalUrl = urlsplit(payloadUrl)
-        payloadUrl = urlunsplit(
-            normalUrl[:1] + (os.environ["CodeBuildDNSRecord"],) + normalUrl[2:]
-        )
-    return payloadUrl
+def update_patch_baselines(session,windows_delay_days, rhel_delay_days):
+    client = session.client('ssm')
+    patch_baselines = []
+    patch_baselines.append({'patch_baseline_id': client.get_default_patch_baseline(OperatingSystem='WINDOWS')['BaselineId'], 'operating_system':'windows'})
+    patch_baselines.append({'patch_baseline_id': client.get_default_patch_baseline(OperatingSystem='REDHAT_ENTERPRISE_LINUX')['BaselineId'], 'operating_system':"rhel"})
 
+    for patch_baseline in patch_baselines:        
+        print("Found the default patch baseline {}".format(patch_baseline))
+        # Set the right delay window
+        if patch_baseline['operating_system'] == 'windows':
+            approve_after_days = windows_delay_days
+        elif patch_baseline['operating_system'] == 'rhel':
+            approve_after_days = rhel_delay_days
+        
+        # Exclude AWS managed patch baselines
+        if not 'arn:aws:ssm' in patch_baseline['patch_baseline_id']:
+            # To update ApprovalRules in a PatchBaseline, PatchFilterGroup must be sent in the API call, we'll retrieve the value from the current PatchBaseline
+            current_patch_baseline = client.get_patch_baseline(BaselineId=patch_baseline['patch_baseline_id'])
+            response = client.update_patch_baseline(
+                BaselineId=patch_baseline['patch_baseline_id'],
+                ApprovalRules={
+                    'PatchRules': [
+                        {   
+                            'PatchFilterGroup': {
+                                'PatchFilters': [
+                                    {
+                                        'Key': current_patch_baseline['ApprovalRules']['PatchRules'][0]['PatchFilterGroup']['PatchFilters'][0]['Key'],
+                                        'Values': current_patch_baseline['ApprovalRules']['PatchRules'][0]['PatchFilterGroup']['PatchFilters'][0]['Values']
+                                    },
+                                ]
+                            },
+                            'ApproveAfterDays': approve_after_days,
+                        },
+                    ]
+                },
+            )
 
-def get_webhook_config(payloadUrl, payloadSecret):
-    """generate a GHE webhook config"""
-    config = {
-        "url": "{}".format(payloadUrl),
-        "content_type": "json",
-        "secret": "{}".format(payloadSecret),
-        "insecure_ssl": "1",
-    }
-    return config
-
-
-def create(cb_client, cb_projectName, cb_filterGroups, gh_client):
-    """Create a webhook"""
-    responseData = {}
-    cb_webhook = cb_client.create_webhook(
-        projectName=cb_projectName, filterGroups=cb_filterGroups
+def run_patching_operation(session,operation, targets):
+    client = session.client('ssm')
+    response = client.send_command(
+        Targets = [targets],
+        DocumentName = 'AWS-RunPatchBaseline',
+        TimeoutSeconds = 600,
+        Comment = 'Executed by lambda',
+        Parameters = {"Operation":[operation],"SnapshotId":[""]},
+        MaxConcurrency = '25%',
+        MaxErrors = '100%'
     )
+    print("run_patching_operation retuned the command Id: {}".format(response['Command']['CommandId']))
 
-    payloadUrl = get_payload_url(cb_webhook["webhook"]["payloadUrl"])
-    responseData = gh_client.create_hook(
-        name="web",
-        config=get_webhook_config(payloadUrl, cb_webhook["webhook"]["secret"]),
-        events=["push", "pull_request"],
-        active=True,
+
+def enable_wuauserv_service(session, tag_value):
+    client = session.client('ssm')
+    response1 = client.send_command(
+        Targets=[
+            {'Key':'tag:Platform', 'Values':['Windows']},
+            {'Key':'tag:MaintenanceWindow', 'Values':[tag_value]}
+        ],
+        DocumentName = 'AWS-RunPowerShellScript',
+        TimeoutSeconds = 600,
+        Comment = 'Executed by patch manager through lambda',
+        Parameters = {
+			'commands': [
+                "$Start_type=(Get-Service wuauserv | select-object -expandproperty StartType | ft -hidetableheaders)",
+                "if($Start_type = \"Disabled\"){",
+                "sc.exe config wuauserv start=demand",
+                "} else {",
+                " Write-Output $Start_type",
+                "}",
+                "$Start=(Get-Service wuauserv | select-object -expandproperty Status | ft -hidetableheaders)",
+                "if($Start = \"Stopped\"){",
+                " sc.exe start wuauserv",
+                "} else {",
+                " Write-Output $Start",
+                "}"
+			]
+		},
+
+        MaxConcurrency = '25%',
+        MaxErrors = '100%'
     )
-    return (
-        {"id": responseData.id, "url": responseData.url},
-        "{}/hooks/{}".format(gh_client.full_name, responseData.id),
-    )
-
-
-def update(cb_client, cb_projectName, cb_filterGroups, gh_client, resource_id):
-    """Update webhook"""
-    cb_webhook = cb_client.update_webhook(
-        projectName=cb_projectName, filterGroups=cb_filterGroups
-    )
-    hook_id = int(resource_id.split("/")[-1])
-    hook = gh_client.get_hook(hook_id)
-    if "payloadUrl" in cb_webhook["webhook"] and "secret" in cb_webhook["webhook"]:
-        payloadUrl = get_payload_url(cb_webhook["webhook"]["payloadUrl"])
-        hook.edit(
-            name="web",
-            config=get_webhook_config(payloadUrl, cb_webhook["webhook"]["secret"]),
-            events=["push", "pull_request"],
-            active=True,
-        )
-    return (
-        {"id": hook.id, "url": hook.url},
-        "{}/hooks/{}".format(gh_client.full_name, hook.id),
-    )
-
-
-def delete(cb_client, cb_projectName, gh_client, resource_id):
-    """Delete webhook"""
-    try:
-        cb_client.delete_webhook(projectName=cb_projectName)
-    except Exception as e:
-        logging.error("Error: %s", str(e))
-
-    hook_id = int(resource_id.split("/")[-1])
-    hook = gh_client.get_hook(hook_id)
-    hook.delete()
-    return ({}, "{}/hooks/{}".format(gh_client.full_name, hook.id))
-
-
+    print('wuauserv Status check returned the command Id: {}'.format(response1['Command']['CommandId']))
+    
+    
 def lambda_handler(event, context):
-    """Main lambda handler"""
-    responseData = {}
-    physicalResourceId = ""
-    try:
-        logger.debug(json.dumps(event))
+    print("Received the event {}".format(event))
+    operation = event['operation']
+    windows_install_delay_days = event['windows_install_delay_days']
+    windows_scan_delay_days = event['windows_scan_delay_days']
+    rhel_install_delay_days = event['rhel_install_delay_days']
+    rhel_scan_delay_days = event['rhel_scan_delay_days']
+    targets = {}
 
-        if event["RequestType"] == "Create":
-            responseData, physicalResourceId = create(
-                get_cb_client(),
-                event["ResourceProperties"]["projectName"],
-                event["ResourceProperties"]["filterGroups"],
-                get_ghe_client(event["ResourceProperties"]["gheUrl"]),
-            )
+    tenant_arn = os.environ['Tenant_Role_Arn']
+    session = get_session(tenant_arn)
+    
+    print("Performing {} operation".format(operation))
 
-        elif event["RequestType"] == "Update":
-            responseData, physicalResourceId = update(
-                get_cb_client(),
-                event["ResourceProperties"]["projectName"],
-                event["ResourceProperties"]["filterGroups"],
-                get_ghe_client(event["ResourceProperties"]["gheUrl"]),
-                event["PhysicalResourceId"],
-            )
-
-        elif event["RequestType"] == "Delete":
-            responseData, physicalResourceId = delete(
-                get_cb_client(),
-                event["ResourceProperties"]["projectName"],
-                get_ghe_client(event["ResourceProperties"]["gheUrl"]),
-                event["PhysicalResourceId"],
-            )
-
-        else:
-            raise Exception()
-
-        cfnresponse_send(event, context, SUCCESS, responseData, physicalResourceId)
-    except Exception as e:
-        logging.error("Error: %s", str(e))
-        if "PhysicalResourceId" in event:
-            cfnresponse_send(
-                event, context, FAILED, responseData, event["PhysicalResourceId"]
-            )
-        else:
-            cfnresponse_send(event, context, FAILED, responseData)
-        raise e
+    if (operation == 'Scan'):
+        targets = {'Key': 'tag:Platform','Values': ['Windows', 'Linux']}
+        update_patch_baselines(session,windows_scan_delay_days, rhel_scan_delay_days)
+    if (operation == 'Install'):
+        tag_value = find_target_tag()
+        targets = {'Key': 'tag:MaintenanceWindow','Values': [tag_value]}
+        update_patch_baselines(session,windows_install_delay_days, rhel_install_delay_days)
+        enable_wuauserv_service(session, tag_value)
+    print ("Targets key value is {}".format(targets))
+    run_patching_operation(session,operation, targets)
+    print(targets)
+    
+    return 'SUCCESS'
