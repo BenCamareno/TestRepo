@@ -36,3 +36,5 @@ jobs:
           echo test, and deploy your project.
       - name: Stelligent cfn_nag
         uses: stelligent/cfn_nag@v0.8.6
+      - name: Scan CF
+        run: cfn_nag_scan
