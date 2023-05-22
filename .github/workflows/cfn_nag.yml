@@ -34,7 +34,14 @@ jobs:
         run: |
           echo Add other actions to build,
           echo test, and deploy your project.
+      
       - name: Stelligent cfn_nag
         uses: stelligent/cfn_nag@v0.8.6
+        
+      - name: Install cfn_nag
+        run: |
+          gen install cfn-nag
+      
       - name: Scan CF
-        run: cfn_nag_scan
+        run: |
+          cfn_nag_scan
