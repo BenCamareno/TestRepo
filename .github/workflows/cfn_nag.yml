@@ -37,10 +37,6 @@ jobs:
       
       - name: Stelligent cfn_nag
         uses: stelligent/cfn_nag@v0.8.6
-        
-      - name: Install cfn_nag
-        run: |
-          gem install cfn-nag
       
       - name: Scan CF
         run: |
