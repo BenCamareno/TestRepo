@@ -40,7 +40,7 @@ jobs:
         
       - name: Install cfn_nag
         run: |
-          gen install cfn-nag
+          gem install cfn-nag
       
       - name: Scan CF
         run: |
