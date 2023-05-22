@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description:
+  "AWS CloudFormation Sample Template - Tagging EC2 Instances."
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the ECS instances.
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      [
+        t2.micro,
+        t2.small,
+      ]
+    ConstraintDescription: Please choose a valid instance type.
+  InstanceAZ:
+    Description: EC2 AZ.
+    Type: AWS::EC2::AvailabilityZone::Name
+    ConstraintDescription: "Must be the name of an availabity zone."
+  WindowsAMIID:
+    Description: The Latest Windows 2016 AMI taken from the public Systems Manager Parameter Store
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /aws/service/ami-windows-latest/Windows_Server-2016-English-Full-Base
+  LinuxAMIID:
+    Description: The Latest Amazon Linux 2 AMI taken from the public Systems Manager Parameter Store
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+Resources:
+  WindowsInstance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: !Ref WindowsAMIID
+      InstanceType: !Ref InstanceType
+      AvailabilityZone: !Ref InstanceAZ
+      IamInstanceProfile: !Ref InstanceProfile
+      KeyName: !Ref KeyName
+      Tags:
+        - Key: NotTagged
+          Value: ""
+  LinuxInstance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: !Ref LinuxAMIID
+      InstanceType: !Ref InstanceType
+      AvailabilityZone: !Ref InstanceAZ
+      IamInstanceProfile: !Ref InstanceProfile
+      KeyName: !Ref KeyName
+      Tags:
+        - Key: MaintenanceWindow
+          Value: "Monday-18:00AEST"
+  InstanceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+  InstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: /
+      Roles:
+        - !Ref InstanceRole
