@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "This stack will deploys an ASG in internal subnets deployed as a Service Catalog product"
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "ASG Internal Parameters"
+        Parameters:
+          - NodeName
+          - EBSSize
+          - EBSType
+          - EBSIOPS
+          - InstanceProfileName
+          - InstanceType
+          - SecurityGroups
+          - OsType
+          - DesiredCapacity
+          - InstanceCountMin
+          - InstanceCountMax
+          - LBTargetGroupArn
+          - RebuildOnUpdate  # Added parameter for rebaking
+
+    # parameter labels 
+    ParameterLabels:
+      SecurityZone:
+        default: "Security Zone"
+      DataClassification:
+        default: "Data Classification"
+      NodeName:
+        default: "Node Name"
+      SecurityGroups:
+        default: "Security Groups"
+      OsType:
+        default: "OS Type"
+      AppSoe:
+        default: "Application SOE AMI Id"
+      UserdataS3script:
+        default: "User data script from S3 bucket"
+      LatestWindowsAmiId:
+        default: "Latest Windows AMI Id"
+      LatestLinuxAmiId:
+        default: "Latest Linux AMI Id"
+      AppPort:
+        default: "Application Port"
+      AppSecret:
+        default: "Application Secret"
+      ConfigureStoreBucket:
+        default: "Existing ConfigureStore S3 Bucket Name created by S3 Blueprint"
+      EBSSize:
+        default: "EBS Volume Size"
+      EBSType:
+        default: "EBS Volume Type"
+      EBSIOPS:
+        default: "EBS Iops"
+      DesiredCapacity: 
+        default: "Desired Capacity ASG"
+      InstanceCountMin: 
+        default: "Minimum Instance Count ASG"
+      InstanceCountMax: 
+        default: "Maximum Instance Count ASG"
+      SnsTopicArn: 
+        default: "SNS Topic ARN"
+      LBTargetGroupArn:
+        default: AutoScaling Group ALB or NLB Target Group ARN
+      InstanceProfileName:
+        default: "Instance Profile Name"
+      InstanceType:
+        default: "Instance Type"
+      RebuildOnUpdate:  # Added label for rebaking parameter
+        default: "Rebuild on Update"
+
+Parameters:
+  # ASG Internal Parameters
+  NodeName:
+    Type: String
+    Description: Unique application name.
+  
+  EBSSize:
+    Description: Size of root EBS volume
+    Default: 50
+    Type: Number
+  
+  EBSType:
+    Description: EBS Volume Type.
+    Default: gp3
+    Type: String
+    AllowedValues: [gp2,gp3,io1,io2,sc1,st1,standard]
+
+  EBSIOPS:
+    Type: Number
+    Description: "[Required only for gp3 (default 3,000), io1 and io2 volumes]. This parameter is not applicable for other EBS volume types (sc1, st1, standard), please leave it as the default number if that is the case. "
+    Default: 3000
+  
+  InstanceProfileName:
+    Description: The instance profile name for EC2. Standard L2 BP Instance Profile for the tenants (if pre-created !!!). if not provided, a new profile will be created with minimum permessions to read from ConfigureStore bucket and read a sample secret stored in secrets manager.
+    Type: String
+
+  InstanceType:
+    Type: String
+    Description: EC2 instance type
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - m5.large
+      - m5.xlarge
+      - m5.2xlarge
+      - m5.4xlarge
+
+  SecurityGroups:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: "Security group name. Firewall rules are preconfigured on each AMI but not enforced until you set the Security Zone."
+  
+  OsType:
+    Type: String
+    Description: 'Choose "Windows" for Windows server, "Linux" for Linux server'
+    Default: Windows
+    AllowedValues:
+      - Windows
+      - Linux
+      
+  DesiredCapacity:
+    Type: Number
+    Description: 'Number of instances to create when you run CreateStack'
+    Default: 1
+
+  InstanceCountMin:
+    Type: Number
+    Description: 'Minimum number of instances to create when you run CreateStack'
+    Default: 1
+
+  InstanceCountMax:
+    Type: Number
+    Description: 'Maximum number of instances to create when you run CreateStack'
+    Default: 3
+
+  LBTargetGroupArn:
+    Type: String
+    Description: 'Target group arn of the Application Load Balancer or Network Load Balancer'
+    
+  RebuildOnUpdate:
+    Type: String
+    Description: 'Enable or disable rebuild on update'
+    Default: "false"
+    AllowedValues: ["true", "false"]  # Added parameter for rebaking
+
+Conditions:
+  RebakeCondition: !Equals [!Ref RebuildOnUpdate, "true"]  # Added condition for rebaking
+
+Resources:
+  ASGInternalBlueprint:
+    Type: AWS::ServiceCatalog::CloudFormationProvisionedProduct
+    Condition: RebakeCondition  # Added condition for rebaking
+    Properties:
+      ProductName: "BP-ASG-Product"
+      ProvisioningArtifactName: "1.0.2"
+      ProvisioningParameters:
+        - Key: "NodeName"
+          Value: !Ref NodeName
+          UsePreviousValue: false
+        - Key: "EBSSize"
+          Value: !Ref EBSSize
+          UsePreviousValue: false
+        - Key: "EBSType"
+          Value: !Ref EBSType
+          UsePreviousValue: false
+        - Key: "EBSIOPS"
+          Value: !Ref EBSIOPS
+          UsePreviousValue: false
+        - Key: "InstanceProfileName"
+          Value: !Ref InstanceProfileName
+          UsePreviousValue: false
+        - Key: "InstanceType"
+          Value: !Ref InstanceType
+          UsePreviousValue: false
+        - Key: "SecurityGroups"
+          Value: !Ref SecurityGroups
+          UsePreviousValue: false
+        - Key: "OsType"
+          Value: !Ref OsType
+          UsePreviousValue: false
+        - Key: "DesiredCapacity"
+          Value: !Ref DesiredCapacity
+          UsePreviousValue: false
+        - Key: "InstanceCountMin"
+          Value: !Ref InstanceCountMin
+          UsePreviousValue: false
+        - Key: "InstanceCountMax"
+          Value: !Ref InstanceCountMax
+          UsePreviousValue: false
+        - Key: "LBTargetGroupArn"
+          Value: !Ref LBTargetGroupArn
+          UsePreviousValue: false
+        - Key: "RebuildOnUpdate"
+          Value: !Ref RebuildOnUpdate  # Added parameter for rebaking
+          UsePreviousValue: false
