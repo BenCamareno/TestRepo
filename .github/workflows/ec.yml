@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Service Catalog product to provision an Auto Scaling Group (ASG) with rebaking option
+
+Parameters:
+  EnableRebaking:
+    Type: String
+    Default: No
+    AllowedValues:
+      - Yes
+      - No
+    Description: Specify whether to enable rebaking of EC2 instances in the ASG.
+
+Resources:
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: MyASG
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MinSize: 2
+      MaxSize: 5
+      DesiredCapacity: 2
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: ami-xxxxxxxxxxxxxx
+      InstanceType: t2.micro
+      SecurityGroups:
+        - sg-xxxxxxxx
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Additional user data configuration, if needed
+          # ...
+
+  RebootInstancesLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: RebootInstancesFunction
+      Handler: index.lambda_handler
+      Role: !GetAtt RebootInstancesLambdaRole.Arn
+      Runtime: python3.8
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+
+          def lambda_handler(event, context):
+              ec2 = boto3.client('ec2')
+              response = ec2.describe_instances(InstanceIds=event['InstanceIds'])
+              instances = response['Reservations'][0]['Instances']
+              for instance in instances:
+                  instance_id = instance['InstanceId']
+                  ec2.reboot_instances(InstanceIds=[instance_id])
+
+  RebootInstancesLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RebootInstancesPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:RebootInstances
+                Resource: "*"
+
+  ServiceCatalogProductAssociation:
+    Type: AWS::ServiceCatalog::CloudFormationProduct
+    Properties:
+      Name: MyASGProduct
+      Description: Service Catalog product to provision an ASG
+      ProvisioningArtifactParameters:
+        - Name: v1
+          Info:
+            LoadTemplateFromURL: https://s3.amazonaws.com/mybucket/asg-template.yaml
+          Description: Initial version of the ASG template
+      Tags:
+        - Key: ServiceCatalogPortfolio
+          Value: MyPortfolio
+
+  RebootInstancesServiceCatalogAssociation:
+    Type: AWS::ServiceCatalog::CloudFormationProduct
+    Properties:
+      Name: RebootInstancesProduct
+      Description: Service Catalog product to reboot EC2 instances
+      ProvisioningArtifactParameters:
+        - Name: v1
+          Info:
+            LoadTemplateFromURL: https://s3.amazonaws.com/mybucket/reboot-instances-template.yaml
+          Description: Initial version of the reboot instances template
+      Tags:
+        - Key: ServiceCatalogPortfolio
+          Value
