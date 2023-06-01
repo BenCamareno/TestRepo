@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: "This stack will deploys an ASG in internal subnets deployed as a Service Catalog product"
+Description: "ASG Blueprint: Create EC2 AutoScaling group"
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
-          default: "ASG Internal Parameters"
+          default: "ASG Generic Parameters"
         Parameters:
           - NodeName
           - EBSSize
@@ -15,12 +15,75 @@ Metadata:
           - SecurityGroups
           - OsType
           - DesiredCapacity
+          - CPUUtilisationTargetValue
           - InstanceCountMin
           - InstanceCountMax
           - LBTargetGroupArn
-          - RebuildOnUpdate  # Added parameter for rebaking
+          - MaxBatchSize
+          - MinInstancesInService
+          - MinSuccessfulInstancesPercent
+          - CfnSignalTimeout
+          - HealthCheckGracePeriod
+      - Label:
+          default: "Blueprint App Parameters"
+        Parameters:
+          - SecurityZone
+          - DataClassification
+          - ConfigureStoreBucket
+          - UserdataS3script
+          - PersistUserdataScript
+          - BluePrintTag
+          - AppSoe
+          - AppPort
+          - AppSecret
+          - LatestWindowsAmiId
+          - LatestLinuxAmiId
+          - SnsTopicArn
+      - Label:
+          default: "Management Zone Parameters"
+        Parameters:
+          - MgmtSubnets
+      - Label:
+          default: "IC Zone Parameters"
+        Parameters:
+          - IcSubnets
+      - Label:
+          default: "Security Zone Parameters"
+        Parameters:
+          - SecSubnets
+      - Label:
+          default: "Restricted Zone Parameters"
+        Parameters:
+          - ResSubnets
+      - Label:
+          default: "Eccf security Zone Parameters"
+        Parameters:
+          - EccfSubnets
+      - Label:
+          default: "Custom Tag"
+        Parameters:
+          - CustomTag1Name
+          - CustomTag1Value
+          - CustomTag2Name
+          - CustomTag2Value
+          - CustomTag3Name
+          - CustomTag3Value
+          - CustomTag4Name
+          - CustomTag4Value
+          - CustomTag5Name
+          - CustomTag5Value
+          - CustomTag6Name
+          - CustomTag6Value
+          - CustomTag7Name
+          - CustomTag7Value
+          - CustomTag8Name
+          - CustomTag8Value
+          - CustomTag9Name
+          - CustomTag9Value
+          - CustomTag10Name
+          - CustomTag10Value
 
-    # parameter labels 
+    # parameter labels
     ParameterLabels:
       SecurityZone:
         default: "Security Zone"
@@ -36,6 +99,8 @@ Metadata:
         default: "Application SOE AMI Id"
       UserdataS3script:
         default: "User data script from S3 bucket"
+      PersistUserdataScript:
+        default: "User Data Persist, Windows only"
       LatestWindowsAmiId:
         default: "Latest Windows AMI Id"
       LatestLinuxAmiId:
@@ -51,14 +116,24 @@ Metadata:
       EBSType:
         default: "EBS Volume Type"
       EBSIOPS:
-        default: "EBS Iops"
-      DesiredCapacity: 
+        default: "EBS IOPS"
+      DesiredCapacity:
         default: "Desired Capacity ASG"
-      InstanceCountMin: 
+      CPUUtilisationTargetValue:
+        default: "CPU Utilisation Target Value"
+      InstanceCountMin:
         default: "Minimum Instance Count ASG"
-      InstanceCountMax: 
+      InstanceCountMax:
         default: "Maximum Instance Count ASG"
-      SnsTopicArn: 
+      MaxBatchSize:
+        default: "Max no. of instances to be updated at the same time"
+      MinInstancesInService:
+        default: "Minimum no. of instances in service"
+      MinSuccessfulInstancesPercent:
+        default: "Minimum successful instances percentage"
+      CfnSignalTimeout:
+        default: "Cloudformation signal timeout"
+      SnsTopicArn:
         default: "SNS Topic ARN"
       LBTargetGroupArn:
         default: AutoScaling Group ALB or NLB Target Group ARN
@@ -66,20 +141,30 @@ Metadata:
         default: "Instance Profile Name"
       InstanceType:
         default: "Instance Type"
-      RebuildOnUpdate:  # Added label for rebaking parameter
-        default: "Rebuild on Update"
-
+      MgmtSubnets:
+        default: The list of Subnet IDs in your Management Zone Virtual Private Cloud (VPC)
+      IcSubnets:
+        default: "IC Zone list of Subnet IDs"
+      SecSubnets:
+        default: "Security Zone security group list of Subnet IDs"
+      ResSubnets:
+        default: "Restricted Zone list of Subnet IDs"
+      EccfSubnets:
+        default: "Eccf Zone list of Subnet IDs"
+      HealthCheckGracePeriod:
+        default: "Health Check grace period"  
 Parameters:
-  # ASG Internal Parameters
+  # EC2-ASG Parameters
   NodeName:
     Type: String
     Description: Unique application name.
-  
+    AllowedPattern: ".+"
+
   EBSSize:
     Description: Size of root EBS volume
     Default: 50
     Type: Number
-  
+
   EBSType:
     Description: EBS Volume Type.
     Default: gp3
@@ -90,108 +175,896 @@ Parameters:
     Type: Number
     Description: "[Required only for gp3 (default 3,000), io1 and io2 volumes]. This parameter is not applicable for other EBS volume types (sc1, st1, standard), please leave it as the default number if that is the case. "
     Default: 3000
-  
   InstanceProfileName:
     Description: The instance profile name for EC2. Standard L2 BP Instance Profile for the tenants (if pre-created !!!). if not provided, a new profile will be created with minimum permessions to read from ConfigureStore bucket and read a sample secret stored in secrets manager.
     Type: String
 
   InstanceType:
+    Description: Any valid EC2 instance size is allowed.
+    Default: t3.micro
     Type: String
-    Description: EC2 instance type
-    Default: t2.micro
-    AllowedValues:
-      - t2.micro
-      - t2.small
-      - t2.medium
-      - m5.large
-      - m5.xlarge
-      - m5.2xlarge
-      - m5.4xlarge
+    AllowedPattern: ".+"
 
   SecurityGroups:
-    Type: AWS::EC2::SecurityGroup::Id
-    Description: "Security group name. Firewall rules are preconfigured on each AMI but not enforced until you set the Security Zone."
-  
-  OsType:
+    Description: Existing security groups to associate with instance (optional)
     Type: String
-    Description: 'Choose "Windows" for Windows server, "Linux" for Linux server'
-    Default: Windows
-    AllowedValues:
-      - Windows
-      - Linux
-      
+    AllowedPattern: ^$|^(sg-[a-z0-9]+,?)+$
+
+  OsType:
+    Description: Operating system, Windows or Linux
+    Default: linux
+    Type: String
+    AllowedValues: [ windows, linux ]
+
   DesiredCapacity:
-    Type: Number
-    Description: 'Number of instances to create when you run CreateStack'
-    Default: 1
+    Description: Required. Max Cluster Size. The maximum number of instances to scale up to based on policies
+    Default: '3'
+    Type: String
 
   InstanceCountMin:
-    Type: Number
-    Description: 'Minimum number of instances to create when you run CreateStack'
-    Default: 1
+    Description: Required. The minimum number of instances to scale down to based on policies
+    Default: '2'
+    Type: String
 
   InstanceCountMax:
-    Type: Number
-    Description: 'Maximum number of instances to create when you run CreateStack'
-    Default: 3
+    Description: Required. Max Cluster Size. The maximum number of instances to scale up to based on policies
+    Default: '9'
+    Type: String
 
   LBTargetGroupArn:
+    Description: Optional, ALB or NLB TargetGroup ARN
     Type: String
-    Description: 'Target group arn of the Application Load Balancer or Network Load Balancer'
-    
-  RebuildOnUpdate:
+    Default: ""
+
+  CPUUtilisationTargetValue:
+    Description: Optional, Target CPU utilisation value (in %) for the ASG
     Type: String
-    Description: 'Enable or disable rebuild on update'
-    Default: "false"
-    AllowedValues: ["true", "false"]  # Added parameter for rebaking
+    Default: ""
+
+  MaxBatchSize:
+    Description: Required. During rolling update, maximum no. of instances to be updated at the same time.
+    Type: String
+    Default: '1'
+
+  MinInstancesInService:
+    Description: Required. During rolling update, minimum no. of instances to be kept in service.
+    Type: String
+    Default: '1'
+
+  MinSuccessfulInstancesPercent:
+    Description: Required. Minimum percentage of instances that must signal back to CloudFormation for both create and update events.
+    Type: String
+    Default: '0'
+  
+  CfnSignalTimeout:
+    Description: Optional. Time to wait for cfn signal from instance before timing out in format "PT12M5S" (12 minutes 5 seconds)
+    Type: String
+    Default: PT15M
+
+  HealthCheckGracePeriod:
+    Description: Optional. The amount of time, in seconds, that ASG waits before checking the health status of an EC2 instance that has come into service and marking it unhealthy due to a failed health check
+    Type: Number
+    Default: 600
+
+  # BluePrint App parameters
+  SecurityZone:
+    Default: ic
+    Type: String
+    Description: Security Zone for the Blueprint
+    AllowedValues: [ic,mgmt,res,sec,eccf]
+
+  DataClassification:
+    Default: Confidential
+    Type: String
+    Description: Data Classification for the Blueprint
+    AllowedValues: [GroupUse,Public,Confidential,CustomerPersonal,HighlyProtected]
+
+  ConfigureStoreBucket:
+    Description: Existing ConfigureStore S3 Bucket Name created by S3 Blueprint
+    Type: String
+    AllowedPattern: ^$|(?=^.{3,63}$)(?!^(\d+\.)+\d+$)(^(([a-z0-9]|[a-z0-9][a-z0-9\-]*[a-z0-9])\.)*([a-z0-9]|[a-z0-9][a-z0-9\-]*[a-z0-9])$)
+
+  BluePrintTag:
+    Default: ASG-Blueprint
+    Type: String
+    AllowedPattern: ".+"
+
+  AppPort:
+    Description: Application tcp port. there is no support for UDP applications at the moment.
+    Default: 443
+    Type: Number
+
+  AppSoe:
+    Default: ""
+    Type: String
+    Description: Sampleapp SOE AMI to use. if not provided, latest windows or linux ami will be used
+
+  UserdataS3script:
+      Type: String
+      Description: Please provide the script KeyName under S3 bucket e.g./abc/scripts.sh if the script under abc folder named as scripts.sh
+  PersistUserdataScript:
+      Description: By default, the user data scripts are run one time when you launch the instance. To run the user data scripts every time you reboot or start the instance(Windows only),change it to true
+      Default: "false"
+      Type: String
+      AllowedValues: ["false", "true"]
+  AppSecret:
+    NoEcho: true # Values to be hidden
+    Type: String
+    Default: 'MySecretValue'
+    AllowedPattern: ".+"
+
+  LatestLinuxAmiId:
+    Type: String
+    Description: Latest CBA Approved Linux AMI Id
+    AllowedPattern: ^$|^ami-[a-z0-9]{8,17}$
+
+  LatestWindowsAmiId:
+    Type: String
+    Description: Latest CBA Approved Windows AMI Id
+    AllowedPattern: ^$|^ami-[a-z0-9]{8,17}$
+
+  SnsTopicArn:
+    Type: String
+    Description: Topic arn to receive notifications about autoscaling activities. if not provided, a new sns topic will be created
+    AllowedPattern: ^$|^arn:aws:sns:.+:\d{12}:.+
+
+  # Management Zone Parameters
+  MgmtSubnets:
+    Default: '/CNS/resources/subnets/mgmt/primary'
+    AllowedValues:
+      - '/CNS/resources/subnets/mgmt/primary'
+    Type: 'AWS::SSM::Parameter::Value<List<String>>'
+    Description: The list of Subnet IDs in your Virtual Private Cloud (VPC)
+    ConstraintDescription: must be valid subnets in which you can launch the EC2 instances
+
+   # IC Zone Parameters
+  IcSubnets:
+    Default: '/CNS/resources/subnets/ic/primary'
+    AllowedValues:
+      - '/CNS/resources/subnets/ic/primary'
+    Type: 'AWS::SSM::Parameter::Value<List<String>>'
+    Description: The list of Subnet IDs in your Virtual Private Cloud (VPC)
+    ConstraintDescription: must be valid subnets in which you can launch the EC2 instances
+  # Sec Zone Parameters
+  SecSubnets:
+    Default: '/CNS/resources/subnets/sec/primary'
+    AllowedValues:
+      - '/CNS/resources/subnets/sec/primary'
+    Type: 'AWS::SSM::Parameter::Value<List<String>>'
+    Description: The list of Subnet IDs in your Virtual Private Cloud (VPC)
+    ConstraintDescription: must be valid subnets in which you can launch the EC2 instances
+   # Res Zone Parameters
+  ResSubnets:
+    Default: '/CNS/resources/subnets/res/primary'
+    AllowedValues:
+      - '/CNS/resources/subnets/res/primary'
+    Type: 'AWS::SSM::Parameter::Value<List<String>>'
+    Description: The list of Subnet IDs in your Virtual Private Cloud (VPC)
+    ConstraintDescription: must be valid subnets in which you can launch the EC2 instances
+   ## ECCF zone Parameters
+  EccfSubnets:
+    Default: '/CNS/resources/subnets/eccf/primary'
+    Type: 'AWS::SSM::Parameter::Value<List<String>>'
+    AllowedValues:
+      - '/CNS/resources/subnets/eccf/primary'
+    Description: The list of Subnet IDs in your Virtual Private Cloud (VPC)
+    ConstraintDescription: must be valid subnets in which you can launch the EC2 instances
+    # ## Custom Tag Parameters
+  CustomTag1Name:
+    Default: ""
+    Type: String
+    Description: Custom Tag Name for ASG
+  CustomTag1Value:
+    Default: ""
+    Type: String
+    Description: Custom Tag Value for ASG
+  CustomTag2Name:
+    Default: ""
+    Type: String
+    Description: Custom Tag Name for ASG
+  CustomTag2Value:
+    Default: ""
+    Type: String
+    Description: Custom Tag Value for ASG
+  CustomTag3Name:
+    Default: ""
+    Type: String
+    Description: Custom Tag Name for ASG
+  CustomTag3Value:
+    Default: ""
+    Type: String
+    Description: Custom Tag Value for ASG
+  CustomTag4Name:
+    Default: ""
+    Type: String
+    Description: Custom Tag Name for ASG
+  CustomTag4Value:
+    Default: ""
+    Type: String
+    Description: Custom Tag Value for ASG
+  CustomTag5Name:
+    Default: ""
+    Type: String
+    Description: Custom Tag Name for ASG
+  CustomTag5Value:
+    Default: ""
+    Type: String
+    Description: Custom Tag Value for ASG
+  CustomTag6Name:
+    Default: ""
+    Type: String
+    Description: Custom Tag Name for ASG
+  CustomTag6Value:
+    Default: ""
+    Type: String
+    Description: Custom Tag Value for ASG
+  CustomTag7Name:
+    Default: ""
+    Type: String
+    Description: Custom Tag Name for ASG
+  CustomTag7Value:
+    Default: ""
+    Type: String
+    Description: Custom Tag Value for ASG
+  CustomTag8Name:
+    Default: ""
+    Type: String
+    Description: Custom Tag Name for ASG
+  CustomTag8Value:
+    Default: ""
+    Type: String
+    Description: Custom Tag Value for ASG
+  CustomTag9Name:
+    Default: ""
+    Type: String
+    Description: Custom Tag Name for ASG
+  CustomTag9Value:
+    Default: ""
+    Type: String
+    Description: Custom Tag Value for ASG
+  CustomTag10Name:
+    Default: ""
+    Type: String
+    Description: Custom Tag Name for ASG
+  CustomTag10Value:
+    Default: ""
+    Type: String
+    Description: Custom Tag Value for ASG
 
 Conditions:
-  RebakeCondition: !Equals [!Ref RebuildOnUpdate, "true"]  # Added condition for rebaking
+  SydRegion: !Equals
+    - !Sub ${AWS::Region}
+    - ap-southeast-2
+
+  isSupportedRegion: !Or
+    - !Condition SydRegion
+    - !Condition SydRegion #Placeholder for additional regions supported
+
+  InstanceProfileNotProvided: !And
+   - !Condition isSupportedRegion
+   - !Equals
+    - !Ref InstanceProfileName
+    - ""
+
+  ScalingOnCPUEnabled: !And
+    - !Condition isSupportedRegion
+    - !Not
+      - !Equals
+        - !Ref CPUUtilisationTargetValue
+        - ""
+
+  #EC2-only Conditions
+  AppSoeProvided:
+    Fn::Not:
+      - !Equals  # use custom ami if provided
+        - !Ref AppSoe
+        - ""
+  # Whether Security Groups are provided
+  SecurityGroupsProvided:
+    Fn::Not:
+      - !Equals
+        - !Ref SecurityGroups
+        - ""
+  #   # Whether SNS Topic is provided
+  SnsTopicNotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref SnsTopicArn
+      - ""
+    #LBTargetGroupArnProvided whether it's provided
+  LBTargetGroupArnProvided:
+    Fn::Not:
+      - !Equals  # use LBTargetGroupArn if provided
+        - !Ref LBTargetGroupArn
+        - ""
+  UserdataS3scriptProvided:
+    Fn::Not:
+      - !Equals  # use custom userdata script if provided
+        - !Ref UserdataS3script
+        - ""
+  PersistUserdataScriptProvided:
+    Fn::Not:
+      - !Equals # use persist custom userdata tag if true
+        - !Ref PersistUserdataScript
+        - "false"
+  UseEBSiops:
+    Fn::Or:
+      - !Equals # io1,io2,gp3 support IOPS, others e.g. gp2, st1, sc1, or standard not supported
+        - !Ref EBSType
+        - "io1"
+      - !Equals
+        - !Ref EBSType
+        - "io2"
+      - !Equals
+        - !Ref EBSType
+        - "gp3"
+
+  LinuxOs: !Equals # OS type is windows if not linux
+    - !Ref OsType
+    - linux
+  # Custom Tag exist
+  CustomTag1NotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref CustomTag1Name
+      - ""
+  CustomTag2NotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref CustomTag2Name
+      - ""
+  CustomTag3NotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref CustomTag3Name
+      - ""
+  CustomTag4NotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref CustomTag4Name
+      - ""
+  CustomTag5NotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref CustomTag5Name
+      - ""
+  CustomTag6NotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref CustomTag6Name
+      - ""
+  CustomTag7NotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref CustomTag7Name
+      - ""
+  CustomTag8NotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref CustomTag8Name
+      - ""
+  CustomTag9NotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref CustomTag9Name
+      - ""
+  CustomTag10NotProvided: !And
+    - !Condition isSupportedRegion
+    - !Equals
+      - !Ref CustomTag10Name
+      - ""
+  MgmtZone: !Equals
+    - !Ref SecurityZone
+    - 'mgmt'
+  IcZone: !Equals
+    - !Ref SecurityZone
+    - 'ic'
+  ResZone: !Equals
+    - !Ref SecurityZone
+    - 'res'
+  SecZone: !Equals
+    - !Ref SecurityZone
+    - 'sec'
+  EccfZone: !Equals
+    - !Ref SecurityZone
+    - 'eccf'
+
+#The following settings are pre created as part of account bootstrapping
+Mappings:
+  SecurityZone:
+    mgmt:
+      # Subnets: '{{resolve:ssm:/CNS/resources/subnets/mgmt/all}}'
+      SecurityGroupID: '{{resolve:ssm:/CNS/resources/mgmt_sg}}'
+      WindowsSGID: '{{resolve:ssm:/CNS/resources/sg/win_mgmt_id}}'
+      LinuxSGID: '{{resolve:ssm:/CNS/resources/sg/linux_mgmt_id}}'
+    ic:
+      #Subnets: '{{resolve:ssm:/CNS/resources/subnets/ic/all}}'
+      SecurityGroupID: '{{resolve:ssm:/CNS/resources/ic_sg}}'
+    res:
+      #Subnets: '{{resolve:ssm:/CNS/resources/subnets/res/all}}'
+      SecurityGroupID: '{{resolve:ssm:/CNS/resources/res_sg}}'
+    sec:
+      #Subnets: '{{resolve:ssm:/CNS/resources/subnets/sec/all}}'
+      SecurityGroupID: '{{resolve:ssm:/CNS/resources/sec_sg}}'
+    eccf:
+      #Subnets: '{{resolve:ssm:/CNS/resources/subnets/sec/all}}'
+      SecurityGroupID: '{{resolve:ssm:/CNS/resources/eccf_sg}}'
+  EC2Parameters:
+    default:
+      VpcId: '{{resolve:ssm:/CNS/resources/vpc_id}}'
+      KMSKeyId: '{{resolve:ssm:/CNS/resources/secretsmanager_key_id}}'
+      EBSKeyId: '{{resolve:ssm:/CNS/resources/ebs_key_id}}'
+      S3KeyId: '{{resolve:ssm:/CNS/resources/s3_key_id}}'
+      SNSKeyId: '{{resolve:ssm:/CNS/resources/sns_key_id}}'
+
 
 Resources:
-  ASGInternalBlueprint:
-    Type: AWS::ServiceCatalog::CloudFormationProvisionedProduct
-    Condition: RebakeCondition  # Added condition for rebaking
+  # Security Groups
+  AppSg:
+    Type: AWS::EC2::SecurityGroup
+    Condition: isSupportedRegion
     Properties:
-      ProductName: "BP-ASG-Product"
-      ProvisioningArtifactName: "1.0.2"
-      ProvisioningParameters:
-        - Key: "NodeName"
-          Value: !Ref NodeName
-          UsePreviousValue: false
-        - Key: "EBSSize"
-          Value: !Ref EBSSize
-          UsePreviousValue: false
-        - Key: "EBSType"
-          Value: !Ref EBSType
-          UsePreviousValue: false
-        - Key: "EBSIOPS"
-          Value: !Ref EBSIOPS
-          UsePreviousValue: false
-        - Key: "InstanceProfileName"
-          Value: !Ref InstanceProfileName
-          UsePreviousValue: false
-        - Key: "InstanceType"
-          Value: !Ref InstanceType
-          UsePreviousValue: false
-        - Key: "SecurityGroups"
-          Value: !Ref SecurityGroups
-          UsePreviousValue: false
-        - Key: "OsType"
-          Value: !Ref OsType
-          UsePreviousValue: false
-        - Key: "DesiredCapacity"
-          Value: !Ref DesiredCapacity
-          UsePreviousValue: false
-        - Key: "InstanceCountMin"
-          Value: !Ref InstanceCountMin
-          UsePreviousValue: false
-        - Key: "InstanceCountMax"
-          Value: !Ref InstanceCountMax
-          UsePreviousValue: false
-        - Key: "LBTargetGroupArn"
-          Value: !Ref LBTargetGroupArn
-          UsePreviousValue: false
-        - Key: "RebuildOnUpdate"
-          Value: !Ref RebuildOnUpdate  # Added parameter for rebaking
-          UsePreviousValue: false
+      GroupDescription: App SG
+      VpcId: !FindInMap [EC2Parameters,default, VpcId]
+      SecurityGroupEgress:
+        - CidrIp: 127.0.0.1/32
+          IpProtocol: "-1"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort:  !Ref AppPort
+          ToPort:  !Ref AppPort
+          CidrIp: '10.0.0.0/8' # This is only approved for web services only for internal ip addresses
+        - IpProtocol: tcp
+          FromPort:  !Ref AppPort
+          ToPort:  !Ref AppPort
+          CidrIp: '172.31.0.0/16' # This is only approved for web services only for internal ip addresses
+      Tags:
+        - Key: DataClassification
+          Value: !Ref DataClassification
+        - Key: BluePrint
+          Value: !Ref BluePrintTag
+        - Key: Name
+          Value: !Sub ${NodeName}-instance-sg
+
+  ## Instance IAM Profile, Role and policy
+  Ec2InstanceProfilePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: InstanceProfileNotProvided ## Adding this to add conditions
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: "s3:ListAllMyBuckets"
+            Resource: "arn:aws:s3:::*"
+          - Effect: Allow
+            Action:
+              - "s3:ListBucket"
+              - "s3:GetBucketLocation"
+            Resource:
+              !Join
+              - ""
+              - - "arn:aws:s3:::"
+                - !Ref ConfigureStoreBucket
+          - Effect: Allow
+            Action:
+              - "s3:GetObject"
+              - "s3:GetObjectVersion"
+            Resource:
+              !Join
+              - ""
+              - - "arn:aws:s3:::"
+                - !Ref ConfigureStoreBucket
+                - "/*"
+          - Effect: Allow
+            Action:
+              - "secretsmanager:GetResourcePolicy"
+              - "secretsmanager:GetSecretValue"
+              - "secretsmanager:DescribeSecret"
+              - "secretsmanager:ListSecretVersionIds"
+              - "secretsmanager:ListSecrets"
+            Resource:
+              !Ref AppSecretSecretsManager
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:CreateLogGroup
+              - logs:PutLogEvents
+              - autoscaling:DescribeAutoScalingInstances
+              - cloudformation:DescribeStackResources
+              - cloudformation:SignalResource
+              - cloudformation:DescribeStacks
+              - elasticloadbalancing:DescribeTargetHealth
+            Resource: "*"
+   ## Instance IAM Profile, Role and policy
+  InstanceProfileRole:
+    Type: AWS::IAM::Role
+    Condition: InstanceProfileNotProvided
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - !Ref Ec2InstanceProfilePolicy
+        - !Sub 'arn:aws:iam::${AWS::AccountId}:policy/BootstrapMandatoryInstancePolicy'
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+        - 'arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess'
+      Tags:
+        - Key: DataClassification
+          Value: !Ref DataClassification
+        - Key: BluePrint
+          Value: !Ref BluePrintTag
+
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Condition: InstanceProfileNotProvided
+    Properties:
+      Path: "/"
+      Roles:
+        - Ref: "InstanceProfileRole"
+
+#Store Instance Profile ARN on SSM parameter
+  InstanceProfileSsmParameter:
+    Type: AWS::SSM::Parameter
+    Condition: isSupportedRegion
+    Properties:
+      Name: !Sub /patterns/${NodeName}/resources/instance_profile_name
+      Description: !Sub "InstanceProfile Name of ${NodeName}"
+      Value:
+        !If
+        - InstanceProfileNotProvided
+        - !Ref Ec2InstanceProfile
+        - !Ref InstanceProfileName
+      Type: String
+      Tags:
+        DataClassification: !Ref DataClassification
+        BluePrint: !Ref BluePrintTag
+#Store APP Secret on Secret Manager
+  AppSecretSecretsManager:
+    Type: AWS::SecretsManager::Secret
+    Condition: isSupportedRegion
+    Properties:
+      Description: application specific secret
+      KmsKeyId: !FindInMap [EC2Parameters,default, KMSKeyId]
+      SecretString: !Sub '{"username": mysecretname", "password": ${AppSecret}}'
+      Tags:
+        - Key: DataClassification
+          Value: !Ref DataClassification
+        - Key: BluePrint
+          Value: !Ref BluePrintTag
+
+#Store APP Secret on SSM Parameter Store
+  AppSecretSSMParameter:
+    Type: AWS::SSM::Parameter
+    Condition: isSupportedRegion
+    Properties:
+      Name: !Sub /patterns/${NodeName}/resources/app_secret
+      Description: dummy app secret
+      Value: !Ref AppSecret
+      Type: String
+      Tags:
+        DataClassification: !Ref DataClassification
+        BluePrint: !Ref BluePrintTag
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Condition: SnsTopicNotProvided
+    Properties:
+      DisplayName: !Sub ${NodeName}-Notifications-Topic
+      KmsMasterKeyId:  !FindInMap [EC2Parameters, default, SNSKeyId]
+      TopicName: !Sub ${NodeName}-Notifications-Topic
+      Tags:
+        - Key: DataClassification
+          Value: !Ref DataClassification
+        - Key: BluePrint
+          Value: !Ref BluePrintTag
+  SNSTopicSsmParameter:
+    Type: AWS::SSM::Parameter
+    Condition: SnsTopicNotProvided
+    Properties:
+      Name: !Sub /patterns/${NodeName}/resources/sns_notifications_topic
+      Value: !Ref SNSTopic
+      Type: String
+      Description: sns notifications topic
+      Tags:
+        DataClassification: !Ref DataClassification
+        BluePrint: !Ref BluePrintTag
+
+  LaunchTemplate:
+    Type: "AWS::EC2::LaunchTemplate"
+    Condition: isSupportedRegion
+    Properties:
+      LaunchTemplateData:
+        ImageId:
+          !If
+          - AppSoeProvided
+          - !Ref AppSoe
+          - !If
+            - LinuxOs
+            - !Ref LatestLinuxAmiId
+            - !Ref LatestWindowsAmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Name:
+             !If
+               - InstanceProfileNotProvided
+               - !Ref Ec2InstanceProfile
+               - !Ref InstanceProfileName
+        Monitoring:
+          Enabled: True
+        BlockDeviceMappings:
+          - DeviceName: "/dev/xvda"
+            Ebs:
+              VolumeSize: !Ref EBSSize
+              Encrypted: True
+              KmsKeyId: !FindInMap [EC2Parameters,default, EBSKeyId]
+              VolumeType: !Ref EBSType
+              Iops: # If EBS support Iops, then use the EBSIops, otherwise just use no value
+                !If [UseEBSiops, !Ref EBSIOPS, !Ref "AWS::NoValue"]
+              DeleteOnTermination: True
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+        SecurityGroupIds: !Split
+          - ','
+          - !Join
+            - ","
+            - - !If
+                - SecurityGroupsProvided
+                - !Ref SecurityGroups
+                - !Ref "AWS::NoValue"
+              - !If
+                - LinuxOs
+                - !FindInMap [SecurityZone, mgmt , LinuxSGID]
+                - !FindInMap [SecurityZone, mgmt , WindowsSGID]
+              - !If
+                 - MgmtZone
+                 - !FindInMap [SecurityZone, mgmt , SecurityGroupID]
+                 - !If
+                     - IcZone
+                     - !FindInMap [SecurityZone, ic , SecurityGroupID]
+                     - !If
+                       - ResZone
+                       - !FindInMap [SecurityZone, res , SecurityGroupID]
+                       - !If
+                          - SecZone
+                          - !FindInMap [SecurityZone, sec , SecurityGroupID]
+                          - !If
+                             - EccfZone
+                             - !FindInMap [SecurityZone, eccf , SecurityGroupID]
+                             - !Ref "AWS::NoValue" # this should never happen
+              - !Ref AppSg
+        UserData: !If
+          - UserdataS3scriptProvided
+          - !If #if UserdataS3script is Provided, then it will run below section depending on the OS type
+            - LinuxOs
+            - Fn::Base64: !Sub |
+                #! /bin/bash
+                # under home folder, it will create a userdata folder. the script will be downloaded from S3 ConfigureStoreBucket and be renamed to bootstrap.sh. Then it will execute bootstrap.sh
+                cd ~
+                mkdir -p userdata
+                aws s3 cp s3://${ConfigureStoreBucket}/${UserdataS3script} ~/userdata/bootstrap.sh
+                sudo chmod +x ~/userdata/bootstrap.sh
+                ~/userdata/bootstrap.sh
+
+            - !If # if persist tag needed (Windows instance only) (By default, the user data scripts are run one time when you launch the instance. To run the user data scripts every time you reboot or start the instance, add <persist>true</persist> to the user data.)
+              - PersistUserdataScriptProvided
+
+              - Fn::Base64: !Sub |
+                  <powershell>
+                  # the script will be downloaded from S3 ConfigureStoreBucket and be renamed to startup.ps1. Then it will execute startup.ps1
+                  Read-S3Object -BucketName ${ConfigureStoreBucket} -Key ${UserdataS3script} -File startup.ps1 -Region ${AWS::Region}
+                  ./startup.ps1 ${AWS::StackId}  ${AWS::Region}
+                  </powershell>
+                  <persist>true</persist>
+
+              - Fn::Base64: !Sub |
+                  <powershell>
+                  # the script will be downloaded from S3 ConfigureStoreBucket and be renamed to startup.ps1. Then it will execute startup.ps1
+                  Read-S3Object -BucketName ${ConfigureStoreBucket} -Key ${UserdataS3script} -File startup.ps1 -Region ${AWS::Region}
+                  ./startup.ps1 ${AWS::StackId}  ${AWS::Region}
+                  </powershell>
+
+          - !If # if there is no script file provided from s3, it will run below dummy default script depends on the OS type
+            - LinuxOs
+            - Fn::Base64: |
+                # No userdata script provided for linux
+
+            - Fn::Base64: |
+                # No userdata script provided for windows
+
+  AutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Condition: isSupportedRegion
+    CreationPolicy:
+      AutoScalingCreationPolicy:
+        MinSuccessfulInstancesPercent: !Ref MinSuccessfulInstancesPercent # Parameterising this to keep it backward compatible as the default value is 100 %
+      ResourceSignal:
+        Count: 1
+        Timeout: !Ref CfnSignalTimeout
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinSuccessfulInstancesPercent: !Ref MinSuccessfulInstancesPercent # Parameterising this to keep it backward compatible as the default value is 100 %
+        MinInstancesInService: !Ref MinInstancesInService
+        MaxBatchSize: !Ref MaxBatchSize
+        PauseTime: !Ref CfnSignalTimeout
+        WaitOnResourceSignals: true
+        SuspendProcesses:
+          - HealthCheck
+          - ReplaceUnhealthy
+          - AZRebalance
+          - AlarmNotification
+          - ScheduledActions
+    Properties:
+      AutoScalingGroupName: !Ref 'AWS::StackName'
+      VPCZoneIdentifier:
+        !If
+        - MgmtZone
+        - !Ref MgmtSubnets
+        - !If
+            - IcZone
+            - !Ref IcSubnets
+            - !If
+              - ResZone
+              - !Ref ResSubnets
+              - !If
+                - SecZone
+                - !Ref SecSubnets
+                - !If
+                  - EccfZone
+                  - !Ref EccfSubnets
+                  - !Ref "AWS::NoValue" # this should never happen
+      TargetGroupARNs:
+        - !If
+             - LBTargetGroupArnProvided
+             - !Ref LBTargetGroupArn
+             - !Ref "AWS::NoValue"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version:
+          Fn::GetAtt: [ LaunchTemplate, LatestVersionNumber ]
+      HealthCheckGracePeriod: !Ref HealthCheckGracePeriod
+      HealthCheckType:
+        !If 
+          - LBTargetGroupArnProvided
+          - "ELB"
+          - !Ref "AWS::NoValue"
+      MinSize: !Ref InstanceCountMin
+      MaxSize: !Ref InstanceCountMax
+      DesiredCapacity: !Ref DesiredCapacity
+      NotificationConfigurations:
+        - NotificationTypes:
+            - autoscaling:EC2_INSTANCE_LAUNCH
+            - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+            - autoscaling:EC2_INSTANCE_TERMINATE
+            - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+            - autoscaling:TEST_NOTIFICATION
+          TopicARN:
+            !If
+               - SnsTopicNotProvided
+               - !Ref SNSTopic
+               - !Ref SnsTopicArn
+      Tags:
+        - Key: Name
+          Value: !Join [ '-', [ !Ref NodeName,'asg-instance' ] ]
+          PropagateAtLaunch: true
+        - !If
+          - CustomTag1NotProvided
+          - !Ref "AWS::NoValue"
+          - Key: !Ref CustomTag1Name
+            Value: !Ref CustomTag1Value
+            PropagateAtLaunch: true
+        - !If
+          - CustomTag2NotProvided
+          - !Ref "AWS::NoValue"
+          - Key: !Ref CustomTag2Name
+            Value: !Ref CustomTag2Value
+            PropagateAtLaunch: true
+        - !If
+          - CustomTag3NotProvided
+          - !Ref "AWS::NoValue"
+          - Key: !Ref CustomTag3Name
+            Value: !Ref CustomTag3Value
+            PropagateAtLaunch: true
+        - !If
+          - CustomTag4NotProvided
+          - !Ref "AWS::NoValue"
+          - Key: !Ref CustomTag4Name
+            Value: !Ref CustomTag4Value
+            PropagateAtLaunch: true
+        - !If
+          - CustomTag5NotProvided
+          - !Ref "AWS::NoValue"
+          - Key: !Ref CustomTag5Name
+            Value: !Ref CustomTag5Value
+            PropagateAtLaunch: true
+        - !If
+          - CustomTag6NotProvided
+          - !Ref "AWS::NoValue"
+          - Key: !Ref CustomTag6Name
+            Value: !Ref CustomTag6Value
+            PropagateAtLaunch: true
+        - !If
+          - CustomTag7NotProvided
+          - !Ref "AWS::NoValue"
+          - Key: !Ref CustomTag7Name
+            Value: !Ref CustomTag7Value
+            PropagateAtLaunch: true
+        - !If
+          - CustomTag8NotProvided
+          - !Ref "AWS::NoValue"
+          - Key: !Ref CustomTag8Name
+            Value: !Ref CustomTag8Value
+            PropagateAtLaunch: true
+        - !If
+          - CustomTag9NotProvided
+          - !Ref "AWS::NoValue"
+          - Key: !Ref CustomTag9Name
+            Value: !Ref CustomTag9Value
+            PropagateAtLaunch: true
+        - !If
+          - CustomTag10NotProvided
+          - !Ref "AWS::NoValue"
+          - Key: !Ref CustomTag10Name
+            Value: !Ref CustomTag10Value
+            PropagateAtLaunch: true
+
+  CPUScalingPolicy:
+    Condition: ScalingOnCPUEnabled
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        TargetValue: !Ref CPUUtilisationTargetValue
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+
+Outputs:
+  AppSgName:
+    Condition: isSupportedRegion
+    Description: EC2 App Security Group Name
+    Value: !Ref AppSg
+  EC2InstanceProfileName:
+    Condition: isSupportedRegion
+    Description: EC2 Instance Profile Name
+    Value: !If
+      - InstanceProfileNotProvided
+      - !Ref Ec2InstanceProfile
+      - !Ref InstanceProfileName
+  InstanceProfileSsmParameterPath:
+    Condition: isSupportedRegion
+    Description: EC2 Instance Profile SSM Parameter Path
+    Value: !Ref InstanceProfileSsmParameter
+  AppSecretSecretsManagerARN:
+    Condition: isSupportedRegion
+    Description: Application Secret AWS Secrets Manager
+    Value: !Ref AppSecretSecretsManager
+  AppSecretSSMParameterPath:
+    Condition: isSupportedRegion
+    Description: Application Secret SSM Parameter Path
+    Value: !Ref AppSecretSSMParameter
+  SNSTopicArnName:
+    Condition: isSupportedRegion
+    Description: SNS Topic ARN
+    Value: !If
+      - SnsTopicNotProvided
+      - !Ref SNSTopic
+      - !Ref SnsTopicArn
+  SNSTopicSSMParameterPath:
+    Condition: SnsTopicNotProvided
+    Description: SNS Topic SSM Parameter Path
+    Value: !Ref SNSTopicSsmParameter
+  LaunchTemplateName:
+    Condition: isSupportedRegion
+    Description: Launch Template Name
+    Value: !Ref LaunchTemplate
+  AutoScalingGroupName:
+    Condition: isSupportedRegion
+    Description:  AutoScaling Group Name
+    Value: !Ref AutoScalingGroup
