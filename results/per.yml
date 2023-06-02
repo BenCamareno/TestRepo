@@ -1,66 +1,9 @@
----
-AWSTemplateFormatVersion: "2010-09-09"
-Description: Additional permissions for AdminUserRole
-
-Resources:
-  AdminUserRoleServiceCatalogPermissions:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      Roles:
-        - AdminUserRole
-      Description: Read write and import permissions for Service Catalog
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:             
-          - Sid: ServiceCatalogPermissions
-            Effect: Allow
-            Action:
-              - servicecatalog:Get*
-              - servicecatalog:Scan*
-              - servicecatalog:Search*
-              - servicecatalog:List*
-              - servicecatalog:TagResource
-              - servicecatalog:UntagResource
-              - servicecatalog:SyncResource
-              - servicecatalog:Accept*
-              - servicecatalog:Associate*
-              - servicecatalog:Batch*
-              - servicecatalog:Copy*
-              - servicecatalog:Create*
-              - servicecatalog:Delete*
-              - servicecatalog:Describe*
-              - servicecatalog:Disable*
-              - servicecatalog:Disassociate*
-              - servicecatalog:Enable*
-              - servicecatalog:Execute*
-              - servicecatalog:Import*
-              - servicecatalog:Provision*
-              - servicecatalog:Put*
-              - servicecatalog:Reject*
-              - servicecatalog:Terminate*
-              - servicecatalog:Update*
-              - ssm:DescribeDocument
-              - ssm:GetAutomationExecution
-              - ssm:ListDocuments
-              - ssm:ListDocumentVersions
-              - config:DescribeConfigurationRecorders
-              - config:DescribeConfigurationRecorderStatus
-            Resource: '*'
-            Condition:
-              StringEquals:
-                aws:RequestedRegion:
-                - ap-southeast-2
-                
-          - Sid: CodePipelinePermissions
-            Effect: Allow
-            Action:
-              - codepipeline:StartPipelineExecution
-              - codepipeline:RetryStageExecution
-              - codepipeline:GetPipelineExecution
-              - codepipeline:GetPipeline
-              - codepipeline:GetJobDetails
-            Resource: '*'
-            Condition:
-              StringEquals:
-                aws:RequestedRegion:
-                - ap-southeast-2
+- Sid: AllowIAMRolePassing
+  Effect: Allow
+  Action:
+    - iam:GetRole
+    - iam:PassRole
+  Resource: '*'
+  Condition:
+    StringEquals:
+      aws:RequestedRegion: ap-southeast-2
