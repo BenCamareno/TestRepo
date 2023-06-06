@@ -12,7 +12,7 @@ API_ENDPOINT="https://ap-southeast-2.cloudconformity.com/v1/reports/${REPORT_ID}
 DOWNLOAD_URL=$(curl -H "Authorization: ApiKey ${API_KEY}" "${API_ENDPOINT}" | jq -r '.url')
 
 # Download the CSV file using curl with the obtained download URL
-curl -o "${OUTPUT_FILE}" "${DOWNLOAD_URL}"
+curl -L --compressed "${DOWNLOAD_URL}" > "${OUTPUT_FILE}" 
 
 # Check if the download was successful
 if [ $? -eq 0 ]; then
@@ -20,3 +20,4 @@ if [ $? -eq 0 ]; then
 else
     echo "Failed to download the CSV file."
 fi
+
