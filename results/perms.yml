@@ -1,0 +1,40 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lambda Execution Role
+Resources:
+  iamLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Lambda Permissions
+      RoleName: "iamLambdaRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+                - "events.amazonaws.com"
+            Action:
+              - sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: ap-southeast-2
+      Policies:
+        - PolicyName: SecretManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:ap-southeast-2:${AWS::AccountId}:secret:c'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeInstances
+                  - ec2:AttachNetworkInterface
+                  - ec2:DeleteNetworkInterface
+                Resource: "*"  
