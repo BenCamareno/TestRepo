@@ -1,40 +1,87 @@
 ---
-AWSTemplateFormatVersion: "2010-09-09"
-Description: Lambda Execution Role
+#This is where you would specify the stacks for the features that you want to deploy
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: Create Stack for tenant's custom services
+
+Mappings:
+  EnvironmentMap:
+    "11111111111111111":
+      Name: npd
+      WSPrefix: "tenant"
+
+
+Parameters:
+  ApplicationName:
+    Type: String
+    Description: Application name
+    Default: tenant-acceleration
+  TemplateLocation:
+    Type: "String"
+  VPCId:
+    Description: VPC ID from Parameter Store
+    Type : 'AWS::SSM::Parameter::Value<String>'
+    Default: /CNS/resources/vpc_id
+  S3KeyId:
+    Description: ID of S3 KMS custom key
+    Type : 'AWS::SSM::Parameter::Value<String>'
+    Default: /CNS/resources/s3_key_id
+  EccfSGId:
+    Description: ECCF security group
+    Type : 'AWS::SSM::Parameter::Value<String>'
+    Default: /CNS/resources/eccf_sg
+  IcSGId:
+    Description: IC security group
+    Type : 'AWS::SSM::Parameter::Value<String>'
+    Default: /CNS/resources/ic_sg
+  MgmtSGId:
+    Description: Management security group
+    Type : 'AWS::SSM::Parameter::Value<String>'
+    Default: /CNS/resources/mgmt_sg
+  SecSGId:
+    Description: Sec security group
+    Type : 'AWS::SSM::Parameter::Value<String>'
+    Default: /CNS/resources/sec_sg
+  ResSGId:
+    Description: Restricted security group
+    Type : 'AWS::SSM::Parameter::Value<String>'
+    Default: /CNS/resources/res_sg
+
 Resources:
-  iamLambdaRole:
-    Type: AWS::IAM::Role
+  AdminUserRolePermissions:
+    Type: AWS::CloudFormation::Stack
     Properties:
-      Description: Lambda Permissions
-      RoleName: "iamLambdaRole"
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - "lambda.amazonaws.com"
-                - "events.amazonaws.com"
-            Action:
-              - sts:AssumeRole
-            Condition:
-              StringEquals:
-                aws:RequestedRegion: ap-southeast-2
-      Policies:
-        - PolicyName: SecretManagerAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - secretsmanager:GetSecretValue
-                Resource:
-                  - !Sub 'arn:aws:secretsmanager:ap-southeast-2:${AWS::AccountId}:secret:c'
-              - Effect: Allow
-                Action:
-                  - ec2:DescribeNetworkInterfaces
-                  - ec2:CreateNetworkInterface
-                  - ec2:DescribeInstances
-                  - ec2:AttachNetworkInterface
-                  - ec2:DeleteNetworkInterface
-                Resource: "*"  
+      TemplateURL: !Sub 'https://s3.ap-southeast-2.amazonaws.com/${TemplateLocation}/AdminUserRole_Permissions.yml'
+
+  iamCICD:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.ap-southeast-2.amazonaws.com/${TemplateLocation}/iamCICD.yml'
+
+  iamCodestar:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.ap-southeast-2.amazonaws.com/${TemplateLocation}/iamAdminUserCodestar.yml'
+
+  iamCodebuildPolicy:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.ap-southeast-2.amazonaws.com/${TemplateLocation}/iamCodebuildpolicy.yml'
+      Parameters:
+        ApplicationName: !Ref ApplicationName
+        EnvironmentName: !FindInMap [EnvironmentMap, !Ref "AWS::AccountId", Name]
+
+  ec2profile:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.ap-southeast-2.amazonaws.com/${TemplateLocation}/instancerole.yml'
+
+  AdminUserTestRolePermissions:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.ap-southeast-2.amazonaws.com/${TemplateLocation}/admin-user-role-policytest.yml'
+
+  iamLambdaRole:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://s3.ap-southeast-2.amazonaws.com/${TemplateLocation}/iamLambdaRole.yml'
