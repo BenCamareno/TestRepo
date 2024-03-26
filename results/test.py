@@ -1,183 +1,521 @@
+import pprint
+import sys
+from dataclasses import dataclass
+
 import boto3
-import time
-import datetime
-import os
+from botocore.exceptions import ClientError,WaiterError
+
 import logging
+import os
+import traceback
+from github_conn import get_cf_template
 
-logger = logging.getLogger()
-# Set logging level to INFO for troubleshoot
-logger.setLevel(logging.INFO)
-# logger.setLevel(logging.WARNING)
+logger = logging.getLogger("privileged_sa_logger")
+logger.setLevel(int(os.getenv("LOG_LEVEL", logging.INFO)))
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s - (%(filename)s:%(lineno)d)')
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
-def get_session(role_arn):
-    logger.info('Assuming the role: ' + str(role_arn))
-    sts = boto3.client('sts')
-    resp = sts.assume_role(
-        RoleArn=role_arn,
-        RoleSessionName='PatchManagerSession'
+class InputValidationError(Exception):
+    def __init__(self, message):
+        self.message = message
+
+@dataclass
+class PrivilegedSaResponse:
+    access_key_id: str
+    secret_key: str
+    aws_role_arn: str
+
+@dataclass
+class PrivilegedSaRequest:
+    aws_account_id: str
+    ci_number: str
+    role_name: str
+    trusted_role_cf_template_path: str = ""
+
+    def sa_name(self):
+        return self._sa_name
+
+    def sa_policy_name(self):
+        return self._sa_policy_name
+    def sa_name_arn(self):
+        return self._sa_name_arn
+
+    def privileged_role_arn(self):
+        return self._privileged_role_arn
+
+    def stack_name(self):
+        return f'cns-identity-pam-onboarding-sa-{self.role_name}'
+    def sa_trust_policy_stack_name(self):
+        return self._sa_trust_policy_stack_name
+    def service_account_trust_policy_cf_template_path(self):
+        return self._service_account_trust_policy_cf_template_path
+
+    def __repr__(self):
+        return f"""
+        sa_name: {self.sa_name()}
+        sa_policy_name: {self.sa_policy_name()}
+        sa_name_arn: {self.sa_name_arn()}
+        privileged_role_arn: {self.privileged_role_arn()}
+        """
+
+    def __post_init__(self):
+        if not (self.aws_account_id and self.ci_number):
+            raise InputValidationError("validation error: aws_account_id and ci_number are both required")
+            return
+
+        print("{:12} {:7}".format(self.aws_account_id, self.ci_number))
+        sa_name_prefix=f'ACOE_CYBERARK_WS_{self.aws_account_id}_{self.ci_number}'
+        self._sa_name = f'{sa_name_prefix}_service_account'
+        self._sa_policy_name = f'{self._sa_name}_policy'
+        self._sa_name_arn=f"arn:aws:iam::{self.aws_account_id}:user/{self._sa_name}"
+
+        __privileged_role_name = f'{sa_name_prefix}_privileged_role'
+        __privileged_role_policy_name = f'{__privileged_role_name}_policy'
+        self._privileged_role_arn = f"arn:aws:iam::{self.aws_account_id}:role/{__privileged_role_name}"
+        privileged_role_policy_arn = f"arn:aws:iam::{self.aws_account_id}:policy/{__privileged_role_policy_name}"
+        self._sa_trust_policy_stack_name="CyberarkPriviligedSaTrustPolicyStack"
+        self._service_account_trust_policy_cf_template_path="serviceaccounts/platform/test-privileged-sa-trust-policy.yaml"
+
+def create_service_account(req: PrivilegedSaRequest) -> PrivilegedSaResponse:
+    noneResponse=PrivilegedSaResponse('','','')
+    logger.info(req)
+    iam = boto3.client("iam")
+    cf = boto3.client('cloudformation')
+
+    # create a IAM user as service account
+    try:
+        create_user_result = iam.create_user(
+            UserName=req.sa_name()
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'EntityAlreadyExists':
+            logger.warning("User already exists")
+        else:
+            logger.error("Unexpected error: %s" % e)
+
+    waiter = iam.get_waiter('user_exists')
+    waiter.wait(
+        UserName=req.sa_name(),
+        WaiterConfig={
+            'Delay': 1,
+            'MaxAttempts': 12
+        }
     )
-    credentials = resp['Credentials']
-    session = boto3.session.Session(
-        aws_access_key_id=credentials['AccessKeyId'],
-        aws_secret_access_key=credentials['SecretAccessKey'],
-        aws_session_token=credentials['SessionToken']
+
+    # create sa trust policy using cf template
+    logger.info(f"fetch sa trust policy at:{req.service_account_trust_policy_cf_template_path()}")
+    sa_trust_policy_template=get_cf_template(req.service_account_trust_policy_cf_template_path())
+    # logger.info("debug role template:{}".format(sa_trust_policy_template))
+
+    response = cf.validate_template(
+        TemplateBody=sa_trust_policy_template
     )
-    return session
 
-def find_target_tag():
-    # Change the maintenance window target based on the time of the day
-    os.environ['TZ'] = 'Australia/Sydney'
-    time.tzset()
-    day = time.strftime('%A', time.localtime())
-    hour = time.strftime('%H', time.localtime())
-    tag_value = '{}-{}:00AEST'.format(day,hour)
-    print("find_target_tag function retuned {}".format(tag_value))
-    return tag_value
+    if response.get('ResponseMetadata').get('HTTPStatusCode')!=200:
+        print("Error in validating CF template, inspect: {}".format(response))
+        return noneResponse
 
-def first_week_of_month():
-    # Returns true if the current day is within the first week of the month
-    os.environ['TZ'] = 'Australia/Sydney'
-    time.tzset()
-    date = time.strftime('%d', time.localtime())
-    if int(date) <= 7:
-        return True
-    else:
-        return False
-    
-def get_week_number_of_month(date):
-    # Get the first day of the month
-    first_day_of_month = date.replace(day=1)
-
-    # Calculate the number of days between the first day of the month and the input date
-    days_passed = (date - first_day_of_month).days
-
-    # Calculate the week number by dividing the days passed by 7 and adding 1
-    week_number = (days_passed // 7) + 1
-
-    return week_number
-
-def update_patch_baselines(session,windows_delay_days, rhel_delay_days):
-    client = session.client('ssm')
-    patch_baselines = []
-    patch_baselines.append({'patch_baseline_id': client.get_default_patch_baseline(OperatingSystem='WINDOWS')['BaselineId'], 'operating_system':'windows'})
-    patch_baselines.append({'patch_baseline_id': client.get_default_patch_baseline(OperatingSystem='REDHAT_ENTERPRISE_LINUX')['BaselineId'], 'operating_system':"rhel"})
-
-    for patch_baseline in patch_baselines:        
-        print("Found the default patch baseline {}".format(patch_baseline))
-        # Set the right delay window
-        if patch_baseline['operating_system'] == 'windows':
-            approve_after_days = windows_delay_days
-        elif patch_baseline['operating_system'] == 'rhel':
-            approve_after_days = rhel_delay_days
-        
-        # Exclude AWS managed patch baselines
-        if not 'arn:aws:ssm' in patch_baseline['patch_baseline_id']:
-            # To update ApprovalRules in a PatchBaseline, PatchFilterGroup must be sent in the API call, we'll retrieve the value from the current PatchBaseline
-            current_patch_baseline = client.get_patch_baseline(BaselineId=patch_baseline['patch_baseline_id'])
-            response = client.update_patch_baseline(
-                BaselineId=patch_baseline['patch_baseline_id'],
-                ApprovalRules={
-                    'PatchRules': [
-                        {   
-                            'PatchFilterGroup': {
-                                'PatchFilters':
-                                    current_patch_baseline['ApprovalRules']['PatchRules'][0]['PatchFilterGroup']['PatchFilters']
-                            },
-                            'ApproveAfterDays': approve_after_days,
-                        },
-                    ]
+    print("Creating sa trust policy stack:{}".format(req.sa_trust_policy_stack_name()))
+    try:
+        response = cf.create_stack(
+            StackName=req.sa_trust_policy_stack_name(),
+            TemplateBody=sa_trust_policy_template,
+            Parameters=[
+                {
+                'ParameterKey': 'SharedServiceAccount',
+                'ParameterValue': req.sa_name()
                 },
+                {
+                'ParameterKey': 'PrivilegedRoleArn',
+                'ParameterValue': req.privileged_role_arn()
+                }
+            ],
+            Capabilities=[
+                'CAPABILITY_IAM','CAPABILITY_NAMED_IAM','CAPABILITY_AUTO_EXPAND'
+            ]
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'AlreadyExistsException':
+            logger.warning("sa trust policy stack already exists, try to update instead ...")
+
+            #===
+            print("update sa trust policy stack:{}".format(req.sa_trust_policy_stack_name()))
+            try:
+                response = cf.update_stack(
+                    StackName=req.sa_trust_policy_stack_name(),
+                    TemplateBody=sa_trust_policy_template,
+                    Parameters=[
+                        {
+                            'ParameterKey': 'SharedServiceAccount',
+                            'ParameterValue': req.sa_name()
+                        },
+                        {
+                            'ParameterKey': 'PrivilegedRoleArn',
+                            'ParameterValue': req.privileged_role_arn()
+                        }
+                    ],
+                    Capabilities=[
+                        'CAPABILITY_IAM','CAPABILITY_NAMED_IAM','CAPABILITY_AUTO_EXPAND'
+                    ]
+                )
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'ValidationError':
+                    # traceback.print_exc()  # Print the detailed stack trace
+                    logger.warning(f"stack: {req.sa_trust_policy_stack_name()} no update required")
+                    logger.warning("potential unhandled error to inspect: %s" % e)
+                else:
+                    logger.error("Unexpected error: %s" % e)
+
+                describe_stack_response = cf.describe_stack_events(
+                    StackName=req.sa_trust_policy_stack_name()
+                )
+                events=describe_stack_response.get('StackEvents')
+                for event in events:
+                    status=event.get('ResourceStatus')
+                    if status.endswith('_FAILED'):
+                        reason=event.get('ResourceStatusReason')
+                        print("{:30} reason: {}".format(status, reason))
+
+            if response.get('ResponseMetadata').get('HTTPStatusCode')!=200:
+                print("Error in update CF {}, inspect: {}".format(req.sa_trust_policy_stack_name(),response))
+                return noneResponse
+        else:
+            logger.error("Unexpected error: %s" % e)
+
+    waiter = cf.get_waiter('stack_create_complete')
+    try:
+        waiter.wait(
+            StackName=req.sa_trust_policy_stack_name(),
+            WaiterConfig={
+                'Delay': 10,
+                'MaxAttempts': 12
+            }
+        )
+    except WaiterError:
+        response = cf.describe_stack_events(
+            StackName=req.sa_trust_policy_stack_name()
+        )
+        events=response.get('StackEvents')
+        for event in events:
+            status=event.get('ResourceStatus')
+            if status.endswith('_FAILED'):
+                reason=event.get('ResourceStatusReason')
+                print("{:30} reason: {}".format(status, reason))
+        return noneResponse
+
+    response = cf.describe_stacks(StackName=req.sa_trust_policy_stack_name())
+    print("trust policy stack details:")
+    pprint.pprint(response)
+    outputs = response.get('Stacks')[0].get('Outputs')
+    saTrustPolicyArn=None
+    for output in outputs:
+        if output['OutputKey']=='SaTrustPolicyArn':
+            print("found: "+output['OutputKey'] + ': ' + output['OutputValue'])
+            saTrustPolicyArn=output['OutputValue']
+            logger.info(f"SA trust policy created: {saTrustPolicyArn}")
+
+    if saTrustPolicyArn == None:
+        logger.error("error in creating trust policy stack and get correct policy Arn")
+        return noneResponse
+
+    try:
+        attach_sa_policy_result = iam.attach_user_policy(
+            UserName=req.sa_name(),
+            PolicyArn=saTrustPolicyArn
+        )
+    except UnboundLocalError:
+        logger.warning("retrieve policy and try to attach ser policy")
+        attach_sa_policy_result = iam.attach_user_policy(
+            UserName=req.sa_name(),
+            PolicyArn=saTrustPolicyArn
+        )
+
+    stack_name = req.stack_name()
+
+    role_template=get_cf_template(req.trusted_role_cf_template_path)
+    # logger.debug("debug role template:{}".format(role_template))
+
+    response = cf.validate_template(
+        TemplateBody=role_template
+    )
+
+    if response.get('ResponseMetadata').get('HTTPStatusCode')!=200:
+        print("Error in validating CF template, inspect: {}".format(response))
+        return noneResponse
+
+    print("Creating stack:{}".format(stack_name))
+    try:
+        response = cf.create_stack(
+            StackName=stack_name,
+            TemplateBody=role_template,
+            Parameters=[{ # set as necessary. Ex:
+                'ParameterKey': 'SharedServiceAccount',
+                'ParameterValue': req.sa_name()
+            }],
+            Capabilities=[
+                'CAPABILITY_IAM','CAPABILITY_NAMED_IAM','CAPABILITY_AUTO_EXPAND'
+            ]
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'AlreadyExistsException':
+            logger.warning("privileged Role CF stack already exists, continue ...")
+            print("update privileged Role CF stack:{}".format(req.stack_name()))
+            try:
+                response = cf.create_stack(
+                    StackName=stack_name,
+                    TemplateBody=role_template,
+                    Parameters=[{ # set as necessary. Ex:
+                        'ParameterKey': 'SharedServiceAccount',
+                        'ParameterValue': req.sa_name()
+                    }],
+                    Capabilities=[
+                        'CAPABILITY_IAM','CAPABILITY_NAMED_IAM','CAPABILITY_AUTO_EXPAND'
+                    ]
+                )
+
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'ValidationError':
+                    # traceback.print_exc()  # Print the detailed stack trace
+                    logger.warning(f"stack: {req.stack_name()} no update required")
+                    logger.warning("potential unhandled error to inspect: %s" % e)
+                else:
+                    logger.error("Unexpected error: %s" % e)
+
+                describe_stack_response = cf.describe_stack_events(
+                    StackName=req.stack_name()
+                )
+                events=describe_stack_response.get('StackEvents')
+                for event in events:
+                    status=event.get('ResourceStatus')
+                    if status.endswith('_FAILED'):
+                        reason=event.get('ResourceStatusReason')
+                        print("{:30} reason: {}".format(status, reason))
+
+            if response.get('ResponseMetadata').get('HTTPStatusCode')!=200:
+                print("Error in update CF {}, inspect: {}".format(req.stack_name(),response))
+                return noneResponse
+        else:
+            logger.error("Unexpected error: %s" % e)
+
+    waiter = cf.get_waiter('stack_create_complete')
+    try:
+        waiter.wait(
+            StackName=stack_name,
+            WaiterConfig={
+                'Delay': 10,
+                'MaxAttempts': 12
+            }
+        )
+    except WaiterError:
+        response = cf.describe_stack_events(
+            StackName=stack_name
+        )
+        events=response.get('StackEvents')
+        for event in events:
+            status=event.get('ResourceStatus')
+            if status.endswith('_FAILED'):
+                reason=event.get('ResourceStatusReason')
+                print("{:30} reason: {}".format(status, reason))
+        return noneResponse
+
+    response = cf.describe_stacks(StackName=stack_name)
+    # pprint.pprint(response)
+    outputs = response.get('Stacks')[0].get('Outputs')
+    for output in outputs:
+        if output['OutputKey']=='PrivilegedRoleArn':
+            print("found: "+output['OutputKey'] + ': ' + output['OutputValue'])
+            privilegedRoleArn=output['OutputValue']
+            logger.info(f"privileged role created: {privilegedRoleArn}")
+
+
+    response = iam.list_access_keys(
+        UserName=req.sa_name(),
+    )
+
+    if response.get('ResponseMetadata').get('HTTPStatusCode')!=200:
+        print("Error in list access keys, inspect: {}".format(response))
+        return noneResponse
+    else:
+        pprint.pprint(response)
+        if len(response['AccessKeyMetadata'])==0:
+            try:
+                response = iam.create_access_key(
+                    UserName=req.sa_name()
+                )
+                pprint.pprint(response)
+            except ClientError as e:
+                logger.error("Unexpected error in generating access key: %s" % e)
+                return noneResponse
+
+            if response.get('ResponseMetadata').get('HTTPStatusCode')!=200:
+                print("Error in generating access key, inspect: {}".format(response))
+            else:
+                return PrivilegedSaResponse(response['AccessKey']['AccessKeyId'], response['AccessKey']['SecretAccessKey'], privilegedRoleArn)
+        else:
+            return PrivilegedSaResponse('','',privilegedRoleArn)
+
+def delete_service_account(req: PrivilegedSaRequest):
+
+    iam = boto3.client("iam")
+    cf = boto3.client('cloudformation')
+    stack_name = req.stack_name()
+
+    logger.info(req)
+    response=None
+    try:
+        response = iam.list_access_keys(
+            UserName=req.sa_name(),
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchEntity':
+            logger.warning("no access key exists")
+        else:
+            logger.error("Unexpected error: %s" % e)
+    if response!=None:
+        if response.get('ResponseMetadata').get('HTTPStatusCode')!=200:
+            print("Error in list access keys, inspect: {}".format(response))
+            return
+        else:
+            pprint.pprint(response)
+            if len(response['AccessKeyMetadata'])==1:
+                logger.info("delete access key")
+                del_access_key_response = iam.delete_access_key(
+                    UserName=req.sa_name(),
+                    AccessKeyId=response['AccessKeyMetadata'][0]['AccessKeyId']
+                )
+                if del_access_key_response.get('ResponseMetadata').get('HTTPStatusCode')!=200:
+                    print("Error in deleting access key id, inspect: {}".format(del_access_key_response))
+                    return
+
+    print(f"deleting stack: {stack_name}")
+    try:
+        cf.delete_stack(
+            StackName=stack_name
+        )
+        waiter = cf.get_waiter('stack_delete_complete')
+        waiter.wait(
+            StackName=stack_name,
+            WaiterConfig={
+                'Delay': 10,
+                'MaxAttempts': 12
+            }
+        )
+    except ClientError as e:
+        logger.error("Unexpected error: %s" % e)
+        return
+
+    response=None
+    try:
+        response = cf.describe_stacks(StackName=req.sa_trust_policy_stack_name())
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ValidationError':
+            logger.warning(f"stack: {req.sa_trust_policy_stack_name()} does not exist")
+        else:
+            logger.error("Unexpected error: %s" % e)
+
+    if response:
+        print("trust policy stack details:")
+        pprint.pprint(response)
+        outputs = response.get('Stacks')[0].get('Outputs')
+        saTrustPolicyArn=None
+        if outputs !=None:
+            for output in outputs:
+                if output['OutputKey']=='SaTrustPolicyArn':
+                    print("found: "+output['OutputKey'] + ': ' + output['OutputValue'])
+                    saTrustPolicyArn=output['OutputValue']
+                    logger.info(f"SA trust policy created: {saTrustPolicyArn}")
+
+        if saTrustPolicyArn == None:
+            logger.error("error in getting trust policy stack and get correct policy Arn")
+            return
+
+        try:
+            detach_user_policy_result = iam.detach_user_policy(
+                UserName=req.sa_name(),
+                PolicyArn=saTrustPolicyArn
             )
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchEntity':
+                logger.warning("user policy does not exist")
+            else:
+                logger.error("Unexpected error: %s" % e)
 
-def run_patching_operation(session,operation, targets):
-    client = session.client('ssm')
-    response = client.send_command(
-        Targets = [targets],
-        DocumentName = 'AWS-RunPatchBaseline',
-        TimeoutSeconds = 600,
-        Comment = 'Executed by lambda',
-        Parameters = {"Operation":[operation],"SnapshotId":[""]},
-        MaxConcurrency = '25%',
-        MaxErrors = '100%'
-    )
-    print("run_patching_operation retuned the command Id: {}".format(response['Command']['CommandId']))
+    print(f"deleting sa trust policy stack: {req.sa_trust_policy_stack_name()}")
+    try:
+        cf.delete_stack(
+            StackName=req.sa_trust_policy_stack_name()
+        )
+        waiter = cf.get_waiter('stack_delete_complete')
+        waiter.wait(
+            StackName=req.sa_trust_policy_stack_name(),
+            WaiterConfig={
+                'Delay': 10,
+                'MaxAttempts': 12
+            }
+        )
+    except ClientError as e:
+        logger.error("Unexpected error: %s" % e)
+        return
 
+    try:
+        delete_user_result = iam.delete_user(
+            UserName=req.sa_name()
+        )
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchEntity':
+            logger.warning("user does not exist")
+        else:
+            logger.error("Unexpected error: %s" % e)
 
-def enable_wuauserv_service(session, tag_value):
-    client = session.client('ssm')
-    response1 = client.send_command(
-        Targets=[
-            {'Key':'tag:Platform', 'Values':['Windows']},
-            {'Key':'tag:MaintenanceWindow', 'Values':[tag_value]}
-        ],
-        DocumentName = 'AWS-RunPowerShellScript',
-        TimeoutSeconds = 600,
-        Comment = 'Executed by patch manager through lambda',
-        Parameters = {
-			'commands': [
-                "$Start_type=(Get-Service wuauserv | select-object -expandproperty StartType | ft -hidetableheaders)",
-                "if($Start_type = \"Disabled\"){",
-                "sc.exe config wuauserv start=demand",
-                "} else {",
-                " Write-Output $Start_type",
-                "}",
-                "$Start=(Get-Service wuauserv | select-object -expandproperty Status | ft -hidetableheaders)",
-                "if($Start = \"Stopped\"){",
-                " sc.exe start wuauserv",
-                "} else {",
-                " Write-Output $Start",
-                "}"
-			]
-		},
-
-        MaxConcurrency = '25%',
-        MaxErrors = '100%'
-    )
-    print('wuauserv Status check returned the command Id: {}'.format(response1['Command']['CommandId']))
-    
-    
 def lambda_handler(event, context):
-    print("Received the event {}".format(event))
-    operation = event['operation']
-    windows_install_delay_days = event['windows_install_delay_days']
-    windows_scan_delay_days = event['windows_scan_delay_days']
-    rhel_install_delay_days = event['rhel_install_delay_days']
-    rhel_scan_delay_days = event['rhel_scan_delay_days']
-    current_date = datetime.date.today()
-    targets = {}
+    logger.info(f'Event: {event}. Context: {context}')
 
-    tenant_arn = os.environ['Tenant_Role_Arn']
-    session = get_session(tenant_arn)
-    
-    print("Performing {} operation".format(operation))
+    try:
+        operation = event.get('operation')
+        ci_number = event.get('ci_number')
+        aws_account_id = event.get('aws_account_id')
+        role_name = event.get('role_name')
+        cf_template_path = event.get('cf_template_path')
 
-    if (operation == 'Scan'):
-        targets = {'Key': 'tag:Platform','Values': ['Windows', 'Linux']}
-        update_patch_baselines(session,windows_scan_delay_days, rhel_scan_delay_days)
-        print ("Scan targets key value is {}".format(targets))
-        run_patching_operation(session,operation, targets)
-    if (operation == 'Install'):
-        tag_value = find_target_tag()
-        targets = {'Key': 'tag:MaintenanceWindow','Values': [tag_value]}
-        update_patch_baselines(session,windows_install_delay_days, rhel_install_delay_days)
-        enable_wuauserv_service(session, tag_value)
-        print ("Install targets key value is {}".format(targets))
-        run_patching_operation(session,operation, targets)
+        sa_request=PrivilegedSaRequest(aws_account_id, ci_number, role_name, cf_template_path)
 
-        # Patch Group for Monthly patches where user has specified the week of the month
-        week_number = get_week_number_of_month(current_date)
-        monthly_tag_value = f"Monthly-{week_number}-{tag_value}"
-        monthly_targets = {'Key': 'tag:MaintenanceWindow','Values': [monthly_tag_value]}
-        enable_wuauserv_service(session, monthly_tag_value)
-        print ("Montly install targets key value is {}".format(monthly_targets))
-        run_patching_operation(session,operation, monthly_targets)
+        logger.info(f'requested operation: {operation}')
+        if operation == 'create_service_account':
+            response=create_service_account(sa_request)
+            masked_secret_key=''
+            if response.secret_key!='':
+                masked_secret_key='marked_secret_key'
+            result=f"""access_key_id: {response.access_key_id}
+                       secret_key: {response.masked_secret_key}
+                       role_arn: {response.aws_role_arn}"""
+            print(result)
+        elif operation == 'delete_service_account':
+            delete_service_account(sa_request)
+        else:
+            raise Exception("Operation not supported yet")
+    except Exception as ex:
+        ex_message = traceback.format_exc()
+        logger.error(ex_message)
+        raise ex
 
-        # Only for first week of the month where user doesn't specify the week of the month
-        if (first_week_of_month()):
-            monthly_tag_value = 'Monthly-' + tag_value
-            monthly_targets = {'Key': 'tag:MaintenanceWindow','Values': [monthly_tag_value]}
-            enable_wuauserv_service(session, monthly_tag_value)
-            print ("Montly install targets key value is {}".format(monthly_targets))
-            run_patching_operation(session,operation, monthly_targets)
-    
-    return 'SUCCESS'
+# For local testing purpose
+if __name__ == "__main__":
+
+    op=sys.argv[1]
+    operation = "create_service_account" if op=="create" else "delete_service_account"
+
+    test_mock_274330501474={
+        'operation': operation,
+        'aws_account_id': '274330501474',
+        'ci_number': '12345678',
+        'role_name': 'PAM-Super-Power-Role',
+        'cf_template_path': 'roles/platform/test-privileged-role.yaml'
+    }
+
+    response = lambda_handler(
+            test_mock_274330501474,
+            "test"
+        )
+    print(response)
